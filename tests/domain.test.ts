@@ -9,6 +9,14 @@ import {
 } from "@/lib/application";
 import { proposeMatch } from "@/lib/domain/matching";
 import { validateJournalEntry, journalBalance } from "@/lib/domain/ledger";
+import {
+  buildPayableInvoiceJournal,
+  buildSalesCreditNoteJournal,
+  calculateTax,
+  convertMoney,
+  resolveFiscalPeriod,
+  roundHalfUp,
+} from "@/lib/domain/accounting-extensions";
 import { parseBankCsv } from "@/lib/domain/import";
 import { formatMoney, parseAmount } from "@/lib/domain/money";
 import type { Account, BankTransaction, Customer, Invoice } from "@/lib/domain/types";
@@ -181,6 +189,111 @@ describe("ledger and import", () => {
       "USD",
     );
     expect(new Set(duplicates.rows.map((row) => row.externalId)).size).toBe(2);
+  });
+});
+
+describe("tax, FX, periods, and payable extensions", () => {
+  it("calculates exact tax and rational FX without floats", () => {
+    const rate = {
+      id: "vat",
+      code: "VAT",
+      ratePpm: 200_000n,
+      effectiveFrom: "2026-01-01",
+      outputAccountId: "tax",
+      inputAccountId: "tax",
+      active: true,
+    };
+    const tax = calculateTax({ amount: usd(1000n), rate, mode: "exclusive" });
+    expect(tax.tax.minor).toBe(200n);
+    expect(calculateTax({ amount: usd(1200n), rate, mode: "inclusive" }).net.minor).toBe(1000n);
+    expect(
+      convertMoney(
+        { currency: "EUR", minor: 10_000n },
+        {
+          id: "fx",
+          fromCurrency: "EUR",
+          toCurrency: "USD",
+          numerator: 11n,
+          denominator: 10n,
+          effectiveFrom: "2026-01-01",
+          purpose: "transaction",
+        },
+      ).minor,
+    ).toBe(11_000n);
+    expect(roundHalfUp(5n, 2n)).toBe(3n);
+  });
+
+  it("rejects closed periods and balances payable/credit-note postings", () => {
+    expect(() =>
+      resolveFiscalPeriod(
+        [{ id: "closed", startDate: "2026-01-01", endDate: "2027-01-01", status: "closed" }],
+        "2026-10-18",
+      ),
+    ).toThrow("fiscal_period_closed");
+    const extensionAccounts: Account[] = [
+      {
+        id: "expense",
+        code: "6000",
+        name: "Expense",
+        type: "expense",
+        control: null,
+        currency: "USD",
+        active: true,
+      },
+      {
+        id: "ap",
+        code: "2000",
+        name: "AP",
+        type: "liability",
+        control: "payable",
+        currency: "USD",
+        active: true,
+      },
+      {
+        id: "returns",
+        code: "4100",
+        name: "Returns",
+        type: "income",
+        control: null,
+        currency: "USD",
+        active: true,
+      },
+      {
+        id: "ar",
+        code: "1100",
+        name: "AR",
+        type: "asset",
+        control: "receivable",
+        currency: "USD",
+        active: true,
+      },
+    ];
+    const payable = buildPayableInvoiceJournal({
+      document: {
+        id: "bill-1",
+        entityId: "entity",
+        date: "2026-10-18",
+        currency: "USD",
+        total: usd(1000n),
+        lines: [{ accountId: "expense", amount: usd(1000n) }],
+      },
+      payableAccountId: "ap",
+      accounts: extensionAccounts,
+      createdAt: "2026-10-18T00:00:00Z",
+    });
+    expect(journalBalance(payable).minor).toBe(0n);
+    const credit = buildSalesCreditNoteJournal({
+      id: "cn-1",
+      entityId: "entity",
+      date: "2026-10-18",
+      total: usd(120n),
+      returnsAccountId: "returns",
+      taxAccountId: "expense",
+      tax: usd(20n),
+      arAccountId: "ar",
+      createdAt: "2026-10-18T00:00:00Z",
+    });
+    expect(journalBalance(credit).minor).toBe(0n);
   });
 });
 

@@ -14,7 +14,16 @@ export type AccountType = "asset" | "liability" | "equity" | "income" | "expense
 
 export type AccountControl = "bank" | "receivable" | "payable" | "unapplied" | null;
 export type JournalSide = "debit" | "credit";
-export type JournalSource = "invoice" | "bank-reconciliation" | "manual" | "reversal" | "opening";
+export type JournalSource =
+  | "invoice"
+  | "credit-note"
+  | "payable-invoice"
+  | "payable-credit-note"
+  | "bank-reconciliation"
+  | "manual"
+  | "fx-revaluation"
+  | "reversal"
+  | "opening";
 
 export type Account = {
   id: string;

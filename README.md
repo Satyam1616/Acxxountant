@@ -45,6 +45,7 @@ npm run typecheck        # strict TypeScript check
 npm run build            # production Next.js build
 npm run smoke            # approve a payment and verify ledger/report invariants
 npm run db:migrate       # apply the shared PostgreSQL table (requires DATABASE_URL)
+npm run db:backfill      # copy the legacy JSON workspace into normalized tables (after migration)
 npm run vercel:deploy    # deploy a production build after Vercel authentication
 ```
 
@@ -110,7 +111,26 @@ For a single-instance development deployment, persist `/app/data`. Production no
 
 Before the first production request, run `npm run db:migrate` against the production database. The adapter also creates the table defensively, but migrations should be applied explicitly as part of release automation.
 
+After the migrations succeed, run `npm run db:backfill` once to copy the legacy `ledgerflow_state` demo into the normalized tenant, accounting, document, bank, match, and audit tables. The backfill is idempotent and never deletes the legacy snapshot.
+
 Generate a strong application secret with `openssl rand -base64 32`, set it as `AUTH_SECRET`, and configure `APP_AUTH_PASSWORD` with at least 12 characters. In Vercel, add these values under **Project Settings → Environment Variables** for Production and redeploy. Do not commit `.env.local` or provider tokens.
+
+### Integrations
+
+The server now includes credential-free provider ports plus real HTTP flows for Plaid Link/token exchange and QuickBooks/Xero OAuth. Configure the provider variables from `.env.example`, then use these server endpoints from an authenticated admin UI:
+
+```text
+POST /api/integrations/plaid/link-token
+POST /api/integrations/plaid/exchange
+GET  /api/integrations/quickbooks/start
+GET  /api/integrations/quickbooks/callback
+GET  /api/integrations/xero/start
+GET  /api/integrations/xero/callback
+```
+
+Provider tokens are encrypted with `ENCRYPTION_KEY`; OAuth state is one-time, tenant-bound, PKCE-protected, and expires after ten minutes. Provider network calls are deliberately kept outside journal posting logic. Configure a durable worker to run `lib/jobs/repository.ts` jobs for initial/incremental syncs.
+
+Health probes are separated into `/api/health/live` and `/api/health/ready`. The latter reports a non-sensitive stable error code when PostgreSQL or durable storage is unavailable.
 
 ### Production hardening roadmap
 

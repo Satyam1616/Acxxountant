@@ -12,7 +12,16 @@ export type StoredJournalEntry = {
   entityId: string;
   date: string;
   description: string;
-  source: "invoice" | "bank-reconciliation" | "manual" | "reversal" | "opening";
+  source:
+    | "invoice"
+    | "credit-note"
+    | "payable-invoice"
+    | "payable-credit-note"
+    | "bank-reconciliation"
+    | "manual"
+    | "fx-revaluation"
+    | "reversal"
+    | "opening";
   sourceId: string;
   lines: StoredJournalLine[];
   createdAt: string;
@@ -72,7 +81,17 @@ const journalSchema = z.object({
   entityId: z.string().min(1),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   description: z.string(),
-  source: z.enum(["invoice", "bank-reconciliation", "manual", "reversal", "opening"]),
+  source: z.enum([
+    "invoice",
+    "credit-note",
+    "payable-invoice",
+    "payable-credit-note",
+    "bank-reconciliation",
+    "manual",
+    "fx-revaluation",
+    "reversal",
+    "opening",
+  ]),
   sourceId: z.string().min(1),
   lines: z.array(lineSchema).min(2),
   createdAt: z.string().datetime(),
