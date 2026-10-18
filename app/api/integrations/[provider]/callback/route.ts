@@ -3,7 +3,11 @@ import { requireSession } from "@/lib/auth";
 import { getState } from "@/lib/store";
 import { accountingProvider } from "@/lib/integrations";
 import { assertOAuthConfiguration } from "@/lib/integrations/oauth";
-import { consumeOAuthState, saveOAuthConnection } from "@/lib/integrations/oauth-store";
+import {
+  consumeOAuthState,
+  saveOAuthConnection,
+  savePendingOAuthConnection,
+} from "@/lib/integrations/oauth-store";
 import { errorResponse } from "@/lib/http";
 
 export async function GET(request: Request, context: { params: Promise<{ provider: string }> }) {
@@ -29,6 +33,7 @@ export async function GET(request: Request, context: { params: Promise<{ provide
       state: stateToken,
       organizationId: workspace.entity.organizationId,
       entityId: workspace.entity.id,
+      userId: `user_${workspace.entity.id}`,
       provider,
       redirectUri: config.redirectUri,
     });
@@ -40,12 +45,28 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     const tenants = await accountingProvider(provider).listExternalTenants({
       accessToken: tokenSet.accessToken,
     });
-    if (tenants.length !== 1)
+    if (tenants.length === 0)
+      return Response.json(
+        { error: "The provider returned no selectable tenants" },
+        { status: 502 },
+      );
+    if (tenants.length !== 1) {
+      const pendingId = await savePendingOAuthConnection({
+        organizationId: workspace.entity.organizationId,
+        entityId: workspace.entity.id,
+        userId: `user_${workspace.entity.id}`,
+        provider,
+        tokenSet,
+        tenants,
+        returnPath: consumed.returnPath,
+      });
       return NextResponse.json({
         status: "tenant_selection_required",
+        pendingId,
         tenants: tenants.map((tenant) => ({ id: tenant.externalTenantId, name: tenant.name })),
         returnPath: consumed.returnPath,
       });
+    }
     await saveOAuthConnection({
       organizationId: workspace.entity.organizationId,
       entityId: workspace.entity.id,

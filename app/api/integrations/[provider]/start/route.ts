@@ -12,7 +12,7 @@ import { errorResponse } from "@/lib/http";
 
 export async function GET(request: Request, context: { params: Promise<{ provider: string }> }) {
   try {
-    const session = requireSession(request, ["admin"]);
+    requireSession(request, ["admin"]);
     const { provider } = await context.params;
     if (provider !== "quickbooks" && provider !== "xero")
       return Response.json({ error: "Unsupported integration provider" }, { status: 400 });
@@ -29,7 +29,9 @@ export async function GET(request: Request, context: { params: Promise<{ provide
       returnPath,
       verifier: pair.verifier,
       state: pair.state,
-      userId: session.email,
+      // The current environment-backed auth has one seeded user. Keep the
+      // OAuth state actor aligned with the relational backfill's stable user id.
+      userId: `user_${state.entity.id}`,
     });
     const authorizationUrl = accountingProvider(provider).buildAuthorizationUrl({
       redirectUri: config.redirectUri,

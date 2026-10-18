@@ -5,6 +5,7 @@ import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
 
 const stateId = "primary-workspace";
+const requiredMigrations = ["001", "002", "003", "004", "005"];
 let pool: Pool | undefined;
 
 // Node runtimes do not consistently expose a WebSocket constructor. Neon
@@ -72,6 +73,45 @@ export async function getPostgresState(): Promise<StorageState> {
         "The workspace state could not be initialized",
       );
     return state;
+  } catch (error) {
+    if (error instanceof StorageError) throw error;
+    throw new StorageError("database_unavailable", "The PostgreSQL storage service is unavailable");
+  } finally {
+    client.release();
+  }
+}
+
+export async function checkPostgresReadiness(): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    const migrations = await client.query<{ version: string }>(
+      "SELECT version FROM schema_migrations WHERE version = ANY($1::text[])",
+      [requiredMigrations],
+    );
+    const applied = new Set(migrations.rows.map((row) => row.version));
+    const missing = requiredMigrations.filter((version) => !applied.has(version));
+    if (missing.length)
+      throw new StorageError(
+        "database_migrations_pending",
+        `Required database migrations are pending: ${missing.join(", ")}`,
+      );
+
+    const tables = await client.query<{ state_table: string | null; jobs_table: string | null }>(
+      "SELECT to_regclass('public.ledgerflow_state') AS state_table, to_regclass('public.jobs') AS jobs_table",
+    );
+    const row = tables.rows[0];
+    if (!row?.state_table || !row.jobs_table)
+      throw new StorageError(
+        "database_schema_incomplete",
+        "Required durable tables are unavailable",
+      );
+
+    const state = await client.query("SELECT 1 FROM ledgerflow_state WHERE id = $1", [stateId]);
+    if (!state.rowCount)
+      throw new StorageError(
+        "legacy_state_missing",
+        "The legacy workspace has not been backfilled",
+      );
   } catch (error) {
     if (error instanceof StorageError) throw error;
     throw new StorageError("database_unavailable", "The PostgreSQL storage service is unavailable");

@@ -26,16 +26,17 @@ async function main() {
     const bankAccountId = `bank_account_${state.entity.id}_legacy`;
 
     await client.query(
+      "SELECT set_config('app.organization_id', $1, true), set_config('app.entity_id', $2, true)",
+      [state.organization.id, state.entity.id],
+    );
+
+    await client.query(
       "INSERT INTO organizations (id, name, created_at) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
       [state.organization.id, state.organization.name, state.organization.createdAt],
     );
     await client.query(
       "INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-      [
-        userId,
-        process.env.APP_AUTH_EMAIL ?? "admin@ledgerflow.local",
-        process.env.APP_AUTH_EMAIL ?? "LedgerFlow Admin",
-      ],
+      [userId, process.env.APP_AUTH_EMAIL ?? "admin@ledgerflow.local", "LedgerFlow Admin"],
     );
     await client.query(
       "INSERT INTO entities (id, organization_id, name, legal_name, base_currency, timezone, auto_apply_threshold, fee_tolerance_minor, ai_provider) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING",
@@ -54,6 +55,10 @@ async function main() {
     await client.query(
       "INSERT INTO organization_memberships (id, organization_id, user_id, role) VALUES ($1,$2,$3,'admin') ON CONFLICT (organization_id, user_id) DO NOTHING",
       [membershipId, state.organization.id, userId],
+    );
+    await client.query(
+      "INSERT INTO membership_entities (organization_id, membership_id, entity_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+      [state.organization.id, membershipId, state.entity.id],
     );
     await client.query(
       "INSERT INTO fiscal_periods (id, organization_id, entity_id, name, start_date, end_date) VALUES ($1,$2,$3,'Legacy migration','2000-01-01','2100-01-01') ON CONFLICT (id) DO NOTHING",
@@ -107,10 +112,46 @@ async function main() {
       );
       for (const [position, keyword] of rule.keywords.entries())
         await client.query(
-          "INSERT INTO category_rule_keywords (rule_id, position, keyword) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
-          [rule.id, position, keyword],
+          "INSERT INTO category_rule_keywords (organization_id, entity_id, rule_id, position, keyword) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+          [state.organization.id, state.entity.id, rule.id, position, keyword],
         );
     }
+    // Journal entries must exist before invoices because invoices carry a
+    // tenant-qualified journal_entry_id foreign key.
+    for (const entry of snapshot.journalEntries) {
+      await client.query(
+        "INSERT INTO journal_entries (id, organization_id, entity_id, fiscal_period_id, posting_date, base_currency, description, source_type, source_id, reverses_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING",
+        [
+          entry.id,
+          state.organization.id,
+          state.entity.id,
+          periodId,
+          entry.date,
+          entry.lines[0]?.amount.currency ?? state.entity.currency,
+          entry.description,
+          entry.source,
+          entry.sourceId,
+          entry.reverses ?? null,
+          entry.createdAt,
+        ],
+      );
+      for (const [lineNo, line] of entry.lines.entries())
+        await client.query(
+          "INSERT INTO journal_lines (id, organization_id, entity_id, journal_entry_id, line_no, account_id, side, base_amount_minor, memo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING",
+          [
+            line.id,
+            state.organization.id,
+            state.entity.id,
+            entry.id,
+            lineNo + 1,
+            line.accountId,
+            line.side,
+            line.amount.minor.toString(),
+            line.memo ?? null,
+          ],
+        );
+    }
+
     for (const invoice of snapshot.invoices) {
       await client.query(
         "INSERT INTO invoices (id, organization_id, entity_id, customer_id, number, issue_date, due_date, currency, subtotal_minor, total_minor, base_subtotal_minor, base_total_minor, status, journal_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$9,$9,$10,$11,$12) ON CONFLICT (id) DO NOTHING",
@@ -143,39 +184,6 @@ async function main() {
             line.unitMinor.toString(),
             (line.unitMinor * BigInt(line.quantity)).toString(),
             line.accountId,
-          ],
-        );
-    }
-    for (const entry of snapshot.journalEntries) {
-      await client.query(
-        "INSERT INTO journal_entries (id, organization_id, entity_id, fiscal_period_id, posting_date, base_currency, description, source_type, source_id, reverses_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING",
-        [
-          entry.id,
-          state.organization.id,
-          state.entity.id,
-          periodId,
-          entry.date,
-          entry.lines[0]?.amount.currency ?? state.entity.currency,
-          entry.description,
-          entry.source,
-          entry.sourceId,
-          entry.reverses ?? null,
-          entry.createdAt,
-        ],
-      );
-      for (const [lineNo, line] of entry.lines.entries())
-        await client.query(
-          "INSERT INTO journal_lines (id, organization_id, entity_id, journal_entry_id, line_no, account_id, side, base_amount_minor, memo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING",
-          [
-            line.id,
-            state.organization.id,
-            state.entity.id,
-            entry.id,
-            lineNo + 1,
-            line.accountId,
-            line.side,
-            line.amount.minor.toString(),
-            line.memo ?? null,
           ],
         );
     }

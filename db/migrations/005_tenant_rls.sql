@@ -6,12 +6,12 @@ DECLARE
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'entities', 'organization_memberships', 'membership_entities', 'accounts',
-    'category_rules', 'customers', 'vendors', 'fiscal_periods', 'tax_rates',
+    'category_rules', 'category_rule_keywords', 'customers', 'vendors', 'fiscal_periods', 'tax_rates',
     'fx_rates', 'journal_entries', 'journal_lines', 'invoices', 'invoice_lines',
     'payable_invoices', 'payable_invoice_lines', 'credit_notes',
     'credit_note_lines', 'credit_note_allocations', 'integration_connections',
     'integration_sync_runs', 'bank_accounts', 'bank_transactions', 'matches',
-    'match_allocations', 'oauth_states', 'audit_events', 'outbox_events',
+    'match_allocations', 'oauth_states', 'oauth_pending_connections', 'audit_events', 'outbox_events',
     'jobs', 'idempotency_keys'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
@@ -32,13 +32,13 @@ DECLARE
   table_name TEXT;
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
-    'membership_entities', 'accounts', 'category_rules',
+    'membership_entities', 'accounts', 'category_rules', 'category_rule_keywords',
     'customers', 'vendors', 'fiscal_periods', 'tax_rates', 'fx_rates',
     'journal_entries', 'journal_lines', 'invoices', 'invoice_lines',
     'payable_invoices', 'payable_invoice_lines', 'credit_notes',
     'credit_note_lines', 'credit_note_allocations', 'integration_connections',
     'integration_sync_runs', 'bank_accounts', 'bank_transactions', 'matches',
-    'match_allocations', 'oauth_states', 'audit_events', 'outbox_events',
+    'match_allocations', 'oauth_states', 'oauth_pending_connections', 'audit_events', 'outbox_events',
     'jobs', 'idempotency_keys'
   ] LOOP
     EXECUTE format('DROP POLICY IF EXISTS tenant_scope_policy ON %I', table_name);

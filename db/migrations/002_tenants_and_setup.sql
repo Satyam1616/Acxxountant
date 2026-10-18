@@ -58,17 +58,20 @@ CREATE TABLE IF NOT EXISTS organization_memberships (
   all_entities BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   revoked_at TIMESTAMPTZ,
-  UNIQUE (organization_id, user_id)
+  UNIQUE (organization_id, user_id),
+  UNIQUE (organization_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS memberships_user_idx ON organization_memberships (user_id, status);
 
 CREATE TABLE IF NOT EXISTS membership_entities (
   organization_id TEXT NOT NULL,
-  membership_id TEXT NOT NULL REFERENCES organization_memberships(id),
-  entity_id TEXT NOT NULL REFERENCES entities(id),
+  membership_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
   granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (membership_id, entity_id)
+  PRIMARY KEY (organization_id, membership_id, entity_id),
+  FOREIGN KEY (organization_id, membership_id) REFERENCES organization_memberships(organization_id, id),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -110,11 +113,18 @@ CREATE TABLE IF NOT EXISTS category_rules (
 );
 
 CREATE TABLE IF NOT EXISTS category_rule_keywords (
-  rule_id TEXT NOT NULL REFERENCES category_rules(id),
+  organization_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  rule_id TEXT NOT NULL,
   position INTEGER NOT NULL,
   keyword TEXT NOT NULL,
-  PRIMARY KEY (rule_id, position)
+  PRIMARY KEY (organization_id, entity_id, rule_id, position),
+  FOREIGN KEY (organization_id, entity_id, rule_id) REFERENCES category_rules(organization_id, entity_id, id),
+  CHECK (position >= 0)
 );
+
+CREATE INDEX IF NOT EXISTS category_rule_keywords_lookup_idx
+  ON category_rule_keywords (organization_id, entity_id, rule_id, position);
 
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,

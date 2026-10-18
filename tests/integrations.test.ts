@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { decryptSecret, encryptSecret } from "@/lib/integrations/crypto";
 import { createPkcePair, validateReturnPath } from "@/lib/integrations/oauth";
-import { QuickBooksClient } from "@/lib/integrations/providers";
+import { QuickBooksClient, XeroClient } from "@/lib/integrations/providers";
 
 describe("integration security foundations", () => {
   afterEach(() => {
@@ -9,6 +9,9 @@ describe("integration security foundations", () => {
     delete process.env.QUICKBOOKS_CLIENT_ID;
     delete process.env.QUICKBOOKS_CLIENT_SECRET;
     delete process.env.QUICKBOOKS_REDIRECT_URI;
+    delete process.env.XERO_CLIENT_ID;
+    delete process.env.XERO_CLIENT_SECRET;
+    delete process.env.XERO_REDIRECT_URI;
   });
 
   it("encrypts credentials with authenticated encryption", () => {
@@ -41,6 +44,22 @@ describe("integration security foundations", () => {
       scopes: ["com.intuit.quickbooks.accounting"],
     });
     expect(url.searchParams.get("client_id")).toBe("client-id");
+    expect(url.searchParams.get("code_challenge")).toBe("challenge");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.toString()).not.toContain("client-secret");
+  });
+
+  it("sends PKCE parameters to Xero too", () => {
+    process.env.XERO_CLIENT_ID = "xero-client-id";
+    process.env.XERO_CLIENT_SECRET = "xero-client-secret";
+    process.env.XERO_REDIRECT_URI = "https://app.example/api/integrations/xero/callback";
+    const url = new XeroClient().buildAuthorizationUrl({
+      redirectUri: process.env.XERO_REDIRECT_URI,
+      state: "state",
+      codeChallenge: "challenge",
+      scopes: ["openid", "offline_access"],
+    });
+    expect(url.searchParams.get("code_challenge")).toBe("challenge");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 });

@@ -109,9 +109,9 @@ docker run --rm -p 3000:3000 -v ledgerflow-data:/app/data ledgerflow
 
 For a single-instance development deployment, persist `/app/data`. Production now supports a shared Neon/PostgreSQL state adapter. Set `STORAGE_ADAPTER=postgres`, `DATABASE_URL`, `AUTH_SECRET`, `APP_AUTH_EMAIL`, and a strong `APP_AUTH_PASSWORD`. The application fails closed in production when durable storage or authentication is not configured. `ALLOW_EPHEMERAL_STORAGE=true` is available only for an explicitly disposable demo and should never be used for financial records.
 
-Before the first production request, run `npm run db:migrate` against the production database. The adapter also creates the table defensively, but migrations should be applied explicitly as part of release automation.
+Before the first production request, export the production `DATABASE_URL` and run `npm run db:migrate` against the production database. The migration runner uses one WebSocket-backed PostgreSQL session, takes an advisory lock before reading migration state, verifies checksums, and commits each release atomically. The adapter also creates the legacy table defensively, but migrations should be applied explicitly as part of release automation.
 
-After the migrations succeed, run `npm run db:backfill` once to copy the legacy `ledgerflow_state` demo into the normalized tenant, accounting, document, bank, match, and audit tables. The backfill is idempotent and never deletes the legacy snapshot.
+After the migrations succeed, run `npm run db:backfill` once to copy the legacy `ledgerflow_state` demo into the normalized tenant, accounting, document, bank, match, and audit tables. The backfill sets the transaction tenant context, inserts journal entries before documents, is idempotent, and never deletes the legacy snapshot. Readiness remains `503` until both migration and backfill are complete.
 
 Generate a strong application secret with `openssl rand -base64 32`, set it as `AUTH_SECRET`, and configure `APP_AUTH_PASSWORD` with at least 12 characters. In Vercel, add these values under **Project Settings → Environment Variables** for Production and redeploy. Do not commit `.env.local` or provider tokens.
 
@@ -124,11 +124,13 @@ POST /api/integrations/plaid/link-token
 POST /api/integrations/plaid/exchange
 GET  /api/integrations/quickbooks/start
 GET  /api/integrations/quickbooks/callback
+POST /api/integrations/quickbooks/select
 GET  /api/integrations/xero/start
 GET  /api/integrations/xero/callback
+POST /api/integrations/xero/select
 ```
 
-Provider tokens are encrypted with `ENCRYPTION_KEY`; OAuth state is one-time, tenant-bound, PKCE-protected, and expires after ten minutes. Provider network calls are deliberately kept outside journal posting logic. Configure a durable worker to run `lib/jobs/repository.ts` jobs for initial/incremental syncs.
+Provider tokens are encrypted with `ENCRYPTION_KEY`; OAuth state is one-time, tenant-bound, user-bound, PKCE-protected, and expires after ten minutes. If an accounting provider returns multiple companies, the callback stores a short-lived encrypted pending token and the authenticated client completes selection with the provider's `/select` endpoint. Provider network calls are deliberately kept outside journal posting logic. Configure a durable worker to run `lib/jobs/repository.ts` jobs for initial/incremental syncs.
 
 Health probes are separated into `/api/health/live` and `/api/health/ready`. The latter reports a non-sensitive stable error code when PostgreSQL or durable storage is unavailable.
 

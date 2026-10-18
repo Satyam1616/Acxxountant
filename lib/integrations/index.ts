@@ -14,5 +14,12 @@ export function plaidProvider() {
 export function integrationScopes(provider: AccountingProvider): string[] {
   return provider === "quickbooks"
     ? ["com.intuit.quickbooks.accounting"]
-    : ["openid", "profile", "email", "accounting.transactions", "accounting.settings"];
+    : [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "accounting.transactions",
+        "accounting.settings",
+      ];
 }

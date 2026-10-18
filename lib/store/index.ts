@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { StorageError } from "@/lib/domain/errors";
 import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
-import { getPostgresState, updatePostgresState } from "./postgres";
+import { checkPostgresReadiness, getPostgresState, updatePostgresState } from "./postgres";
 
 type StorageAdapter = "json" | "postgres";
 
@@ -100,6 +100,11 @@ export async function getState(): Promise<StorageState> {
   if (storageAdapter === "postgres") return getPostgresState();
   statePromise ??= ensureJsonState();
   return statePromise;
+}
+
+export async function checkStorageReadiness(): Promise<void> {
+  if (storageAdapter === "postgres") return checkPostgresReadiness();
+  await ensureJsonState();
 }
 
 export async function updateState(mutator: (state: StorageState) => void): Promise<StorageState> {

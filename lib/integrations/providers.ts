@@ -264,6 +264,8 @@ export class QuickBooksClient implements AccountingProviderPort {
       scope: input.scopes.join(" "),
       redirect_uri: input.redirectUri,
       state: input.state,
+      code_challenge: input.codeChallenge,
+      code_challenge_method: "S256",
     }).toString();
     return url;
   }
@@ -380,6 +382,8 @@ export class XeroClient implements AccountingProviderPort {
       scope: input.scopes.join(" "),
       state: input.state,
       redirect_uri: input.redirectUri,
+      code_challenge: input.codeChallenge,
+      code_challenge_method: "S256",
     }).toString();
     return url;
   }
@@ -412,7 +416,13 @@ export class XeroClient implements AccountingProviderPort {
       },
       "Xero",
     );
-    return tokenSet(payload, ["openid", "profile", "email", "accounting.transactions"]);
+    return tokenSet(payload, [
+      "openid",
+      "profile",
+      "email",
+      "offline_access",
+      "accounting.transactions",
+    ]);
   }
   async refreshToken(input: {
     refreshToken: SecretValue;

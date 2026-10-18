@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS credit_notes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (organization_id, entity_id, number),
+  UNIQUE (organization_id, entity_id, id),
   FOREIGN KEY (organization_id, entity_id, customer_id) REFERENCES customers(organization_id, entity_id, id),
   FOREIGN KEY (organization_id, entity_id, original_invoice_id) REFERENCES invoices(organization_id, entity_id, id),
   FOREIGN KEY (organization_id, entity_id, journal_entry_id) REFERENCES journal_entries(organization_id, entity_id, id)
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (organization_id, entity_id, bank_account_id, source, external_id),
   UNIQUE (organization_id, entity_id, bank_account_id, source, provider_transaction_id),
+  UNIQUE (organization_id, entity_id, id),
   FOREIGN KEY (organization_id, entity_id, bank_account_id) REFERENCES bank_accounts(organization_id, entity_id, id),
   FOREIGN KEY (organization_id, entity_id, posted_journal_entry_id) REFERENCES journal_entries(organization_id, entity_id, id)
 );
@@ -155,6 +157,7 @@ CREATE TABLE IF NOT EXISTS matches (
   suggested_account_id TEXT,
   rationale JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (organization_id, entity_id, id),
   resolved_at TIMESTAMPTZ,
   resolved_by_user_id TEXT REFERENCES users(id),
   FOREIGN KEY (organization_id, entity_id, bank_transaction_id) REFERENCES bank_transactions(organization_id, entity_id, id),
@@ -196,8 +199,30 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   expires_at TIMESTAMPTZ NOT NULL,
   consumed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id),
+  FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS oauth_pending_connections (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('quickbooks', 'xero')),
+  credentials_ciphertext TEXT NOT NULL,
+  tenants JSONB NOT NULL,
+  return_path TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  CHECK (jsonb_typeof(tenants) = 'array')
+);
+
+CREATE INDEX IF NOT EXISTS oauth_pending_connections_expiry_idx
+  ON oauth_pending_connections (expires_at)
+  WHERE consumed_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
@@ -211,7 +236,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   detail TEXT NOT NULL,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   request_id TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS audit_events_entity_idx ON audit_events (organization_id, entity_id, created_at DESC);
@@ -232,7 +259,9 @@ CREATE TABLE IF NOT EXISTS outbox_events (
   locked_at TIMESTAMPTZ,
   locked_by TEXT,
   last_error TEXT,
-  UNIQUE (organization_id, idempotency_key)
+  UNIQUE (organization_id, idempotency_key),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox_events (available_at, occurred_at) WHERE published_at IS NULL;
@@ -254,7 +283,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
   idempotency_key TEXT,
-  UNIQUE (organization_id, idempotency_key)
+  UNIQUE (organization_id, idempotency_key),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
 );
 
 CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs (run_after, created_at) WHERE status IN ('queued', 'retry_wait');
@@ -271,5 +302,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   response_body JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL,
-  UNIQUE (organization_id, entity_id, scope, idempotency_key)
+  UNIQUE (organization_id, entity_id, scope, idempotency_key),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id),
+  FOREIGN KEY (organization_id, entity_id) REFERENCES entities(organization_id, id)
 );

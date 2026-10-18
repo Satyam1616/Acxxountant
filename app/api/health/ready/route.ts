@@ -1,4 +1,5 @@
-import { getState, getStorageInfo } from "@/lib/store";
+import { authStatus } from "@/lib/auth";
+import { checkStorageReadiness, getStorageInfo } from "@/lib/store";
 
 export async function GET() {
   const checks: Array<{
@@ -6,8 +7,14 @@ export async function GET() {
     status: "ok" | "degraded" | "unavailable";
     errorCode?: string;
   }> = [];
+  const auth = authStatus();
+  checks.push({
+    name: "auth",
+    status: auth.configured ? "ok" : "unavailable",
+    ...(auth.configured ? {} : { errorCode: "auth_not_configured" }),
+  });
   try {
-    await getState();
+    await checkStorageReadiness();
     checks.push({ name: "storage", status: "ok" });
   } catch (error) {
     checks.push({
