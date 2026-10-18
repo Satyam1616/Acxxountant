@@ -103,7 +103,7 @@ The included Dockerfile builds a standalone Next.js image:
 docker run --rm -p 3000:3000 -v ledgerflow-data:/app/data ledgerflow
 ```
 
-For a single-instance deployment, persist `/app/data`. For a multi-instance SaaS deployment, implement the `StorageState` repository against PostgreSQL and make `STORAGE_ADAPTER=postgres` fail closed until `DATABASE_URL` is present. The domain and application layer deliberately do not depend on JSON-specific behavior, so this migration is isolated to `lib/store/`.
+For a single-instance deployment, persist `/app/data`. On Vercel, the demo automatically uses `/tmp` so the deployed preview remains interactive, but `/tmp` is ephemeral and must not be treated as financial persistence. For a multi-instance SaaS deployment, implement the `StorageState` repository against PostgreSQL and make `STORAGE_ADAPTER=postgres` fail closed until `DATABASE_URL` is present. The domain and application layer deliberately do not depend on JSON-specific behavior, so this migration is isolated to `lib/store/`.
 
 ### Production hardening roadmap
 

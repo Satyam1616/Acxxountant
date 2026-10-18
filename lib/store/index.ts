@@ -3,7 +3,12 @@ import path from "node:path";
 import { createSeedState } from "./seed";
 import type { StorageState } from "./schema";
 
-const storagePath = path.join(process.cwd(), "data", "ledgerflow.json");
+// Vercel's function filesystem is read-only except for /tmp. This keeps the
+// hosted demo usable while making the persistence limitation explicit in the
+// deployment docs; production multi-instance use should select a shared DB.
+const storagePath = process.env.VERCEL
+  ? path.join("/tmp", "ledgerflow.json")
+  : path.join(process.cwd(), "data", "ledgerflow.json");
 let statePromise: Promise<StorageState> | undefined;
 let writeQueue = Promise.resolve();
 
