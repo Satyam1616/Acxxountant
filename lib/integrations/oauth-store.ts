@@ -204,7 +204,7 @@ export async function saveOAuthConnection(input: {
     await client.query("BEGIN");
     await setTenantContext(client, input.organizationId, input.entityId);
     const connection = await client.query<{ id: string }>(
-      "INSERT INTO integration_connections (id, organization_id, entity_id, provider, status, external_tenant_id, external_tenant_name, credentials_ciphertext, scopes) VALUES ($1,$2,$3,$4,'connected',$5,$6,$7,$8::jsonb) ON CONFLICT (organization_id, provider, external_tenant_id) DO UPDATE SET entity_id=EXCLUDED.entity_id, status='connected', external_tenant_name=EXCLUDED.external_tenant_name, credentials_ciphertext=EXCLUDED.credentials_ciphertext, scopes=EXCLUDED.scopes, error_code=NULL, error_message=NULL, updated_at=NOW() RETURNING id",
+      "INSERT INTO integration_connections (id, organization_id, entity_id, provider, status, external_tenant_id, external_tenant_name, credential_ref, credentials_ciphertext, credential_key_version, scopes) VALUES ($1,$2,$3,$4,'connected',$5,$6,$5,$7,1,$8::jsonb) ON CONFLICT (organization_id, provider, external_tenant_id) DO UPDATE SET entity_id=EXCLUDED.entity_id, status='connected', external_tenant_name=EXCLUDED.external_tenant_name, credential_ref=EXCLUDED.credential_ref, credentials_ciphertext=EXCLUDED.credentials_ciphertext, credential_key_version=1, scopes=EXCLUDED.scopes, error_code=NULL, error_message=NULL, updated_at=NOW() RETURNING id",
       [
         randomUUID(),
         input.organizationId,
@@ -257,7 +257,7 @@ export async function savePlaidConnection(input: {
     await client.query("BEGIN");
     await setTenantContext(client, input.organizationId, input.entityId);
     const inserted = await client.query<{ id: string }>(
-      "INSERT INTO integration_connections (id, organization_id, entity_id, provider, status, external_tenant_id, external_tenant_name, credentials_ciphertext, scopes) VALUES ($1,$2,$3,'plaid','connected',$4,$5,$6,'[]'::jsonb) ON CONFLICT (organization_id, provider, external_tenant_id) DO UPDATE SET entity_id=EXCLUDED.entity_id, status='connected', credentials_ciphertext=EXCLUDED.credentials_ciphertext, external_tenant_name=EXCLUDED.external_tenant_name, error_code=NULL, error_message=NULL, updated_at=NOW() RETURNING id",
+      "INSERT INTO integration_connections (id, organization_id, entity_id, provider, status, external_tenant_id, external_tenant_name, credential_ref, credentials_ciphertext, credential_key_version, scopes) VALUES ($1,$2,$3,'plaid','connected',$4,$5,$4,$6,1,'[]'::jsonb) ON CONFLICT (organization_id, provider, external_tenant_id) DO UPDATE SET entity_id=EXCLUDED.entity_id, status='connected', credential_ref=EXCLUDED.credential_ref, credentials_ciphertext=EXCLUDED.credentials_ciphertext, external_tenant_name=EXCLUDED.external_tenant_name, credential_key_version=1, error_code=NULL, error_message=NULL, updated_at=NOW() RETURNING id",
       [
         randomUUID(),
         input.organizationId,

@@ -1,4 +1,5 @@
 import { PlaidClient, QuickBooksClient, XeroClient } from "./providers";
+export { PostgresCredentialVault } from "./credential-vault";
 import type { AccountingProvider } from "./types";
 
 export function accountingProvider(provider: string) {
