@@ -1,10 +1,15 @@
-import { Pool, type PoolClient } from "@neondatabase/serverless";
+import { neonConfig, Pool, type PoolClient } from "@neondatabase/serverless";
+import ws from "ws";
 import { StorageError } from "@/lib/domain/errors";
 import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
 
 const stateId = "primary-workspace";
 let pool: Pool | undefined;
+
+// Node runtimes do not consistently expose a WebSocket constructor. Neon
+// needs one for transaction/session support used by SELECT ... FOR UPDATE.
+neonConfig.webSocketConstructor ??= ws;
 
 function getPool(): Pool {
   const connectionString = process.env.DATABASE_URL;

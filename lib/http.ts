@@ -16,6 +16,15 @@ export function errorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: "Validation failed", issues: error.issues }, { status: 400 });
   if (error instanceof AuthError)
     return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+  if (
+    error instanceof Error &&
+    "status" in error &&
+    (error as Error & { status?: number }).status === 429
+  )
+    return NextResponse.json(
+      { error: error.message, code: "rate_limited" },
+      { status: 429, headers: { "Retry-After": "60" } },
+    );
   if (error instanceof DomainError)
     return NextResponse.json({ error: error.message, code: error.code }, { status: 400 });
   if (error instanceof StorageError)

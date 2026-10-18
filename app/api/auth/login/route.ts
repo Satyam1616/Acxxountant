@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { authenticate, loginSchema, sessionCookie } from "@/lib/auth";
 import { errorResponse } from "@/lib/http";
+import { clientAddress, enforceRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    enforceRateLimit(`login:${clientAddress(request)}`, 10, 60_000);
     const input = loginSchema.parse(await request.json());
     const session = authenticate(input.email, input.password);
     const response = NextResponse.json({

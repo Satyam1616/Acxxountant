@@ -1,9 +1,11 @@
 import { importTransactions } from "@/lib/application";
 import { requireSession } from "@/lib/auth";
 import { errorResponse, jsonSafe } from "@/lib/http";
+import { clientAddress, enforceRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    enforceRateLimit(`import:${clientAddress(request)}`, 20, 60_000);
     const session = requireSession(request, ["admin", "accountant"]);
     const contentLength = Number(request.headers.get("content-length") ?? 0);
     if (contentLength > 2_500_000)

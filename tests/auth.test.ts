@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { authenticate, getSession, sessionCookie } from "@/lib/auth";
+import { clearRateLimits, enforceRateLimit } from "@/lib/rate-limit";
 
 describe("workspace authentication", () => {
   it("signs and verifies an http-only session cookie", () => {
@@ -20,5 +21,12 @@ describe("workspace authentication", () => {
     expect(() => authenticate("admin@ledgerflow.local", "wrong-password")).toThrow(
       "Email or password",
     );
+  });
+
+  it("limits repeated mutation attempts", () => {
+    clearRateLimits();
+    for (let attempt = 0; attempt < 2; attempt += 1) enforceRateLimit("test", 2, 60_000);
+    expect(() => enforceRateLimit("test", 2, 60_000)).toThrow("Too many requests");
+    clearRateLimits();
   });
 });

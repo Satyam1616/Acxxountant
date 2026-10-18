@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { Pool } from "@neondatabase/serverless";
+import { neonConfig, Pool } from "@neondatabase/serverless";
 import path from "node:path";
+import ws from "ws";
+
+neonConfig.webSocketConstructor ??= ws;
 
 async function main() {
   const connectionString = process.env.DATABASE_URL;
@@ -19,6 +22,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
   process.exitCode = 1;
 });
