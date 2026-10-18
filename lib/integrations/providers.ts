@@ -1,5 +1,5 @@
 import { assertOAuthConfiguration } from "./oauth";
-import type { Invoice } from "@/lib/domain/types";
+import type { CurrencyCode, Invoice } from "@/lib/domain/types";
 import type {
   AccountingProviderPort,
   BankFeedDelta,
@@ -86,6 +86,47 @@ function tokenSet(
     expiresAt: new Date(Date.now() + (payload.expires_in ?? 3600) * 1000).toISOString(),
     scopes: payload.scope?.split(" ").filter(Boolean) ?? fallbackScopes,
     tokenType: "Bearer",
+  };
+}
+
+const currencyScales: Record<CurrencyCode, number> = {
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  CAD: 2,
+  JPY: 0,
+  KRW: 0,
+  BHD: 3,
+  KWD: 3,
+};
+
+function currencyCode(value: string | undefined): CurrencyCode {
+  return value && value in currencyScales ? (value as CurrencyCode) : "USD";
+}
+
+function minorUnits(value: string | number | undefined, currency: CurrencyCode): string {
+  const text = String(value ?? "0").trim();
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) throw new ProviderError("malformed_response", "Provider returned an invalid amount");
+  const scale = currencyScales[currency];
+  const sign = match[1] === "-" ? -1n : 1n;
+  const whole = BigInt(match[2]);
+  let fraction = (match[3] ?? "").padEnd(scale, "0");
+  let rounded = 0n;
+  if (fraction.length > scale) {
+    const roundDigit = fraction[scale];
+    fraction = fraction.slice(0, scale);
+    rounded = roundDigit && roundDigit >= "5" ? 1n : 0n;
+  }
+  const minor = whole * 10n ** BigInt(scale) + BigInt(fraction || "0") + rounded;
+  return (sign * minor).toString();
+}
+
+function providerCallHeaders(input: ProviderCall): Record<string, string> {
+  return {
+    Authorization: `Bearer ${input.credential.accessToken}`,
+    Accept: "application/json",
+    "x-ledgerflow-request-id": input.requestId,
   };
 }
 
@@ -340,20 +381,95 @@ export class QuickBooksClient implements AccountingProviderPort {
   async listInvoices(
     input: ProviderCall & { cursor: string | null },
   ): Promise<SyncPage<ExternalInvoice>> {
-    void input;
-    throw new ProviderError(
-      "invalid_request",
-      "QuickBooks invoice pull requires a selected realm connection",
-    );
+    const realmId = input.credential.credentialRef;
+    if (!realmId)
+      throw new ProviderError(
+        "invalid_request",
+        "QuickBooks invoice pull requires a realm connection",
+      );
+    const startPosition = Math.max(1, Number.parseInt(input.cursor ?? "1", 10) || 1);
+    const query = `SELECT * FROM Invoice STARTPOSITION ${startPosition} MAXRESULTS 100`;
+    const url = new URL(`${this.apiBase}/v3/company/${encodeURIComponent(realmId)}/query`);
+    url.searchParams.set("query", query);
+    url.searchParams.set("minorversion", "75");
+    const payload = await fetchJson<{
+      QueryResponse?: {
+        Invoice?: Array<{
+          Id?: string;
+          DocNumber?: string;
+          TxnDate?: string;
+          DueDate?: string;
+          CurrencyRef?: { value?: string };
+          TotalAmt?: string | number;
+          Balance?: string | number;
+          CustomerRef?: { name?: string };
+          TxnStatus?: string;
+        }>;
+      };
+    }>(url.toString(), { headers: providerCallHeaders(input), signal: input.signal }, "QuickBooks");
+    const invoices = payload.QueryResponse?.Invoice ?? [];
+    const items = invoices.map((invoice) => {
+      const currency = currencyCode(invoice.CurrencyRef?.value);
+      const balance = minorUnits(invoice.Balance, currency);
+      return {
+        externalId: invoice.Id ?? invoice.DocNumber ?? "",
+        number: invoice.DocNumber ?? invoice.Id ?? "",
+        customerName: invoice.CustomerRef?.name,
+        issueDate: invoice.TxnDate ?? new Date().toISOString().slice(0, 10),
+        dueDate: invoice.DueDate,
+        currency,
+        total: { currency, minor: minorUnits(invoice.TotalAmt, currency) },
+        status: balance === "0" ? "paid" : (invoice.TxnStatus ?? "open"),
+      };
+    });
+    return {
+      items,
+      nextCursor: items.length === 100 ? String(startPosition + items.length) : null,
+      hasMore: items.length === 100,
+    };
   }
   async listPayments(
     input: ProviderCall & { cursor: string | null },
   ): Promise<SyncPage<ExternalPayment>> {
-    void input;
-    throw new ProviderError(
-      "invalid_request",
-      "QuickBooks payment pull requires a selected realm connection",
-    );
+    const realmId = input.credential.credentialRef;
+    if (!realmId)
+      throw new ProviderError(
+        "invalid_request",
+        "QuickBooks payment pull requires a realm connection",
+      );
+    const startPosition = Math.max(1, Number.parseInt(input.cursor ?? "1", 10) || 1);
+    const query = `SELECT * FROM Payment STARTPOSITION ${startPosition} MAXRESULTS 100`;
+    const url = new URL(`${this.apiBase}/v3/company/${encodeURIComponent(realmId)}/query`);
+    url.searchParams.set("query", query);
+    url.searchParams.set("minorversion", "75");
+    const payload = await fetchJson<{
+      QueryResponse?: {
+        Payment?: Array<{
+          Id?: string;
+          TxnDate?: string;
+          TotalAmt?: string | number;
+          PrivateNote?: string;
+          CustomerRef?: { name?: string };
+          CurrencyRef?: { value?: string };
+        }>;
+      };
+    }>(url.toString(), { headers: providerCallHeaders(input), signal: input.signal }, "QuickBooks");
+    const payments = payload.QueryResponse?.Payment ?? [];
+    const items = payments.map((payment) => {
+      const currency = currencyCode(payment.CurrencyRef?.value);
+      return {
+        externalId: payment.Id ?? "",
+        date: payment.TxnDate ?? new Date().toISOString().slice(0, 10),
+        amount: { currency, minor: minorUnits(payment.TotalAmt, currency) },
+        reference: payment.PrivateNote ?? payment.CustomerRef?.name,
+        status: "posted",
+      };
+    });
+    return {
+      items,
+      nextCursor: items.length === 100 ? String(startPosition + items.length) : null,
+      hasMore: items.length === 100,
+    };
   }
   async pushInvoice(
     input: ProviderCall & { invoice: Invoice; requestKey: string },
@@ -463,20 +579,99 @@ export class XeroClient implements AccountingProviderPort {
   async listInvoices(
     input: ProviderCall & { cursor: string | null },
   ): Promise<SyncPage<ExternalInvoice>> {
-    void input;
-    throw new ProviderError(
-      "invalid_request",
-      "Xero invoice pull requires a selected tenant connection",
+    const tenantId = input.credential.credentialRef;
+    if (!tenantId)
+      throw new ProviderError("invalid_request", "Xero invoice pull requires a tenant connection");
+    const page = Math.max(1, Number.parseInt(input.cursor ?? "1", 10) || 1);
+    const url = new URL("https://api.xero.com/api.xro/2.0/Invoices");
+    url.searchParams.set("page", String(page));
+    const payload = await fetchJson<{
+      Invoices?: Array<{
+        InvoiceID?: string;
+        InvoiceNumber?: string;
+        Type?: string;
+        DateString?: string;
+        DueDateString?: string;
+        CurrencyCode?: string;
+        Total?: string | number;
+        AmountDue?: string | number;
+        Contact?: { Name?: string };
+        Status?: string;
+      }>;
+    }>(
+      url.toString(),
+      {
+        headers: { ...providerCallHeaders(input), "Xero-tenant-id": tenantId },
+        signal: input.signal,
+      },
+      "Xero",
     );
+    const invoices = (payload.Invoices ?? []).filter((invoice) => invoice.Type === "ACCREC");
+    const items = invoices.map((invoice) => {
+      const currency = currencyCode(invoice.CurrencyCode);
+      return {
+        externalId: invoice.InvoiceID ?? invoice.InvoiceNumber ?? "",
+        number: invoice.InvoiceNumber ?? invoice.InvoiceID ?? "",
+        customerName: invoice.Contact?.Name,
+        issueDate: invoice.DateString ?? new Date().toISOString().slice(0, 10),
+        dueDate: invoice.DueDateString,
+        currency,
+        total: { currency, minor: minorUnits(invoice.Total, currency) },
+        status:
+          minorUnits(invoice.AmountDue, currency) === "0" || invoice.Status === "PAID"
+            ? "paid"
+            : (invoice.Status ?? "open"),
+      };
+    });
+    return {
+      items,
+      nextCursor: items.length === 100 ? String(page + 1) : null,
+      hasMore: items.length === 100,
+    };
   }
   async listPayments(
     input: ProviderCall & { cursor: string | null },
   ): Promise<SyncPage<ExternalPayment>> {
-    void input;
-    throw new ProviderError(
-      "invalid_request",
-      "Xero payment pull requires a selected tenant connection",
+    const tenantId = input.credential.credentialRef;
+    if (!tenantId)
+      throw new ProviderError("invalid_request", "Xero payment pull requires a tenant connection");
+    const page = Math.max(1, Number.parseInt(input.cursor ?? "1", 10) || 1);
+    const url = new URL("https://api.xero.com/api.xro/2.0/Payments");
+    url.searchParams.set("page", String(page));
+    const payload = await fetchJson<{
+      Payments?: Array<{
+        PaymentID?: string;
+        Date?: string;
+        Amount?: string | number;
+        Reference?: string;
+        Status?: string;
+        Invoice?: { InvoiceNumber?: string; CurrencyCode?: string };
+        Account?: { Name?: string };
+      }>;
+    }>(
+      url.toString(),
+      {
+        headers: { ...providerCallHeaders(input), "Xero-tenant-id": tenantId },
+        signal: input.signal,
+      },
+      "Xero",
     );
+    const payments = payload.Payments ?? [];
+    const items = payments.map((payment) => {
+      const currency = currencyCode(payment.Invoice?.CurrencyCode);
+      return {
+        externalId: payment.PaymentID ?? "",
+        date: payment.Date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
+        amount: { currency, minor: minorUnits(payment.Amount, currency) },
+        reference: payment.Reference ?? payment.Invoice?.InvoiceNumber ?? payment.Account?.Name,
+        status: payment.Status ?? "posted",
+      };
+    });
+    return {
+      items,
+      nextCursor: items.length === 100 ? String(page + 1) : null,
+      hasMore: items.length === 100,
+    };
   }
   async pushInvoice(
     input: ProviderCall & { invoice: Invoice; requestKey: string },

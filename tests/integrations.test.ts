@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { decryptSecret, encryptSecret } from "@/lib/integrations/crypto";
 import { createPkcePair, validateReturnPath } from "@/lib/integrations/oauth";
 import { QuickBooksClient, XeroClient } from "@/lib/integrations/providers";
 
 describe("integration security foundations", () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     delete process.env.ENCRYPTION_KEY;
     delete process.env.QUICKBOOKS_CLIENT_ID;
     delete process.env.QUICKBOOKS_CLIENT_SECRET;
@@ -61,5 +62,90 @@ describe("integration security foundations", () => {
     });
     expect(url.searchParams.get("code_challenge")).toBe("challenge");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("normalizes QuickBooks invoice pages without using floating-point money", async () => {
+    const fetchMock = vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            QueryResponse: {
+              Invoice: [
+                {
+                  Id: "qb-1",
+                  DocNumber: "INV-1",
+                  TxnDate: "2026-01-02",
+                  DueDate: "2026-02-01",
+                  CurrencyRef: { value: "USD" },
+                  TotalAmt: "123.45",
+                  Balance: "0.00",
+                  CustomerRef: { name: "Example Co" },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new QuickBooksClient().listInvoices({
+      credential: {
+        connectionId: "connection",
+        credentialRef: "realm",
+        accessToken: "token" as never,
+        scopes: [],
+      },
+      requestId: "request",
+      cursor: null,
+    });
+    expect(result.items[0]).toMatchObject({
+      externalId: "qb-1",
+      number: "INV-1",
+      total: { currency: "USD", minor: "12345" },
+      status: "paid",
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("realm");
+  });
+
+  it("normalizes Xero payment pages and sends the tenant header", async () => {
+    const fetchMock = vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>(
+      async (_url, init) => {
+        void init;
+        return new Response(
+          JSON.stringify({
+            Payments: [
+              {
+                PaymentID: "xero-payment-1",
+                Date: "2026-01-03T00:00:00",
+                Amount: "20.50",
+                Reference: "INV-1",
+                Status: "AUTHORISED",
+                Invoice: { CurrencyCode: "EUR" },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new XeroClient().listPayments({
+      credential: {
+        connectionId: "connection",
+        credentialRef: "xero-tenant",
+        accessToken: "token" as never,
+        scopes: [],
+      },
+      requestId: "request",
+      cursor: null,
+    });
+    expect(result.items[0]).toMatchObject({
+      externalId: "xero-payment-1",
+      amount: { currency: "EUR", minor: "2050" },
+      status: "AUTHORISED",
+    });
+    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>)["Xero-tenant-id"]).toBe(
+      "xero-tenant",
+    );
   });
 });
