@@ -1,4 +1,5 @@
 import { DomainError } from "./errors";
+import { isValidBusinessDate } from "./date";
 import { parseAmount } from "./money";
 import type { BankFlow, CurrencyCode } from "./types";
 
@@ -17,8 +18,20 @@ export type CsvImportResult = {
   errors: Array<{ row: number; message: string }>;
 };
 
-export function parseBankCsv(csv: string, currency: CurrencyCode): CsvImportResult {
+const MAX_CSV_BYTES = 2_000_000;
+const MAX_CSV_ROWS = 10_000;
+
+export function parseBankCsv(csv: string, currency: CurrencyCode, source = "csv"): CsvImportResult {
+  if (Buffer.byteLength(csv, "utf8") > MAX_CSV_BYTES) {
+    throw new DomainError("csv_too_large", "CSV imports are limited to 2 MB");
+  }
   const rows = parseCsv(csv.replace(/^\uFEFF/, ""));
+  if (rows.length > MAX_CSV_ROWS + 1) {
+    throw new DomainError(
+      "csv_too_many_rows",
+      `CSV imports are limited to ${MAX_CSV_ROWS} data rows`,
+    );
+  }
   if (rows.length < 2)
     throw new DomainError("csv_has_no_rows", "Add a header and at least one transaction");
   const headers = rows[0].map((header) => normalizeHeader(header));
@@ -38,6 +51,7 @@ export function parseBankCsv(csv: string, currency: CurrencyCode): CsvImportResu
     );
   const output: ImportedTransaction[] = [];
   const errors: CsvImportResult["errors"] = [];
+  const occurrences = new Map<string, number>();
   rows.slice(1).forEach((row, offset) => {
     const rowNumber = offset + 2;
     if (row.every((cell) => !cell.trim())) return;
@@ -55,21 +69,25 @@ export function parseBankCsv(csv: string, currency: CurrencyCode): CsvImportResu
           rawAmount = debit;
           flow = "outflow";
         }
-      } else if (/^\s*[-(]/.test(rawAmount) || /\bDR\b/i.test(rawAmount)) {
+      } else if (/^\s*[-(]/.test(rawAmount) || /DR\s*$/i.test(rawAmount)) {
         flow = "outflow";
       }
+      const hasCreditMarker = /CR\s*$/i.test(rawAmount);
       const cleaned = rawAmount
         .replace(/[,$\s]/g, "")
         .replace(/^\((.*)\)$/, "-$1")
-        .replace(/CR$/i, "")
-        .replace(/DR$/i, "-");
-      const amount = parseAmount(cleaned.replace(/^-/, ""), currency);
+        .replace(/(?:CR|DR)$/i, "")
+        .replace(/^-/, "");
+      if (hasCreditMarker) flow = "inflow";
+      const amount = parseAmount(cleaned, currency);
       const absolute = { ...amount, minor: amount.minor < 0n ? -amount.minor : amount.minor };
       const reference = row[referenceIndex] ?? "";
       const description = (row[descriptionIndex] ?? reference) || "Imported transaction";
+      const canonical = `${source}|${date}|${absolute.minor}|${flow}|${normalizeIdentity(description)}|${normalizeIdentity(reference)}|${normalizeIdentity(row[counterpartyIndex] ?? "")}`;
+      const occurrence = (occurrences.get(canonical) ?? 0) + 1;
+      occurrences.set(canonical, occurrence);
       output.push({
-        externalId:
-          reference || stableFingerprint(`${date}|${absolute.minor}|${description}|${rowNumber}`),
+        externalId: stableFingerprint(`${canonical}|${occurrence}`),
         date,
         amount: absolute,
         flow,
@@ -97,11 +115,27 @@ function normalizeHeader(value: string): string {
 function normalizeDate(value: string): string {
   const trimmed = value.trim();
   const iso = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(trimmed);
-  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  if (iso) {
+    const date = `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+    if (!isValidBusinessDate(date)) throw new DomainError("invalid_date", `Invalid date: ${value}`);
+    return date;
+  }
+  const monthFirst = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
+  if (monthFirst) {
+    const date = `${monthFirst[3]}-${monthFirst[1].padStart(2, "0")}-${monthFirst[2].padStart(2, "0")}`;
+    if (!isValidBusinessDate(date)) throw new DomainError("invalid_date", `Invalid date: ${value}`);
+    return date;
+  }
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime()))
     throw new DomainError("invalid_date", `Invalid date: ${value}`);
-  return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, "0")}-${String(parsed.getUTCDate()).padStart(2, "0")}`;
+  const date = `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, "0")}-${String(parsed.getUTCDate()).padStart(2, "0")}`;
+  if (!isValidBusinessDate(date)) throw new DomainError("invalid_date", `Invalid date: ${value}`);
+  return date;
+}
+
+function normalizeIdentity(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toUpperCase();
 }
 
 function stableFingerprint(value: string): string {

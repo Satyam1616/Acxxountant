@@ -20,7 +20,10 @@ export function normalizeReference(value: string): string {
 
 function containsReference(transaction: BankTransaction, invoice: Invoice): boolean {
   const haystack = normalizeReference(`${transaction.description} ${transaction.reference}`);
-  return haystack.includes(normalizeReference(invoice.number));
+  const needle = normalizeReference(invoice.number);
+  if (!needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^A-Z0-9])${escaped}(?:$|[^A-Z0-9])`, "i").test(haystack);
 }
 
 function scoreInvoice(transaction: BankTransaction, invoice: Invoice, customer?: Customer): number {

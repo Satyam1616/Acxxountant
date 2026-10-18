@@ -101,6 +101,7 @@ export function buildReconciliationJournal(params: {
     apAccountId?: string;
   }>;
   offsets: Array<{ accountId: string; amount: Money; side: JournalSide; memo?: string }>;
+  journalEntryId?: string;
 }): JournalEntry {
   const lines: JournalLine[] = [
     {
@@ -137,7 +138,7 @@ export function buildReconciliationJournal(params: {
   }
 
   return {
-    id: `je_${params.transactionId}`,
+    id: params.journalEntryId ?? `je_${params.transactionId}`,
     entityId: params.entityId,
     date: params.date,
     description: params.description,

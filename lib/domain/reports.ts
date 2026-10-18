@@ -1,5 +1,5 @@
 import { add, money, subtract, zero } from "./money";
-import type { AgingRow, DomainSnapshot, Invoice, TrialBalanceRow } from "./types";
+import type { AgingRow, DomainSnapshot, Invoice, InvoiceStatus, TrialBalanceRow } from "./types";
 
 function dateValue(date: string): number {
   return new Date(`${date}T00:00:00Z`).getTime();
@@ -27,6 +27,18 @@ export function appliedByInvoice(snapshot: DomainSnapshot, asOf?: string): Map<s
 
 export function outstanding(invoice: Invoice, applied: Map<string, bigint>): bigint {
   return invoice.total.minor - (applied.get(invoice.id) ?? 0n);
+}
+
+export function derivedInvoiceStatus(
+  invoice: Invoice,
+  applied: Map<string, bigint>,
+  asOf: string,
+): InvoiceStatus {
+  if (invoice.status === "void" || invoice.status === "draft") return invoice.status;
+  const remaining = outstanding(invoice, applied);
+  if (remaining <= 0n) return "paid";
+  if ((applied.get(invoice.id) ?? 0n) > 0n) return "partial";
+  return invoice.dueDate < asOf ? "overdue" : "issued";
 }
 
 export function trialBalance(snapshot: DomainSnapshot, asOf: string): TrialBalanceRow[] {

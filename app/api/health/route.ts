@@ -1,11 +1,22 @@
 import { getState } from "@/lib/store";
+import { getStorageInfo } from "@/lib/store";
 
 export async function GET() {
-  const state = await getState();
-  return Response.json({
-    status: "ok",
-    app: "LedgerFlow",
-    storage: process.env.STORAGE_ADAPTER ?? "json",
-    entity: state.entity.id,
-  });
+  try {
+    await getState();
+    const storage = getStorageInfo();
+    return Response.json(
+      { status: "ok", app: "LedgerFlow", storage, timestamp: new Date().toISOString() },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (error) {
+    return Response.json(
+      {
+        status: "degraded",
+        app: "LedgerFlow",
+        error: error instanceof Error ? error.message : "Storage unavailable",
+      },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 }

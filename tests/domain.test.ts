@@ -1,11 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { approveTransaction, getDashboard, getReports, undoTransaction } from "@/lib/application";
+import {
+  approveTransaction,
+  createCustomer,
+  getDashboard,
+  getReports,
+  saveSettings,
+  undoTransaction,
+} from "@/lib/application";
 import { proposeMatch } from "@/lib/domain/matching";
 import { validateJournalEntry, journalBalance } from "@/lib/domain/ledger";
 import { parseBankCsv } from "@/lib/domain/import";
 import { formatMoney, parseAmount } from "@/lib/domain/money";
 import type { Account, BankTransaction, Customer, Invoice } from "@/lib/domain/types";
-import { resetState, getState } from "@/lib/store";
+import { resetState, getState, updateState } from "@/lib/store";
 import { snapshotFromStored } from "@/lib/store/serialize";
 
 const usd = (minor: bigint) => ({ currency: "USD", minor });
@@ -104,6 +111,18 @@ describe("matching", () => {
       customers: [customer],
     });
     expect(ambiguous.status).toBe("ambiguous");
+    const falsePrefix = proposeMatch({
+      transaction: {
+        ...transaction,
+        reference: "INV-10420",
+        description: "Payment INV-10420",
+        amount: usd(10000n),
+      },
+      invoices: [invoice("short", "INV-1042", 10000n)],
+      customers: [customer],
+    });
+    expect(falsePrefix.status).toBe("proposed");
+    expect(falsePrefix.confidence).toBeLessThan(0.99);
   });
 });
 
@@ -148,6 +167,20 @@ describe("ledger and import", () => {
     expect(result.rows[0].amount.minor).toBe(12550n);
     expect(result.rows[0].flow).toBe("inflow");
     expect(result.rows[1].flow).toBe("outflow");
+    const suffixMarkers = parseBankCsv(
+      "Date,Amount,Description\n2026-10-03,20DR,Fee\n2026-10-04,20CR,Refund",
+      "USD",
+    );
+    expect(suffixMarkers.errors).toHaveLength(0);
+    expect(suffixMarkers.rows.map((row) => row.flow)).toEqual(["outflow", "inflow"]);
+    expect(parseBankCsv("Date,Amount\n2026-02-31,1.00", "USD").errors[0]?.message).toContain(
+      "invalid_date",
+    );
+    const duplicates = parseBankCsv(
+      "Date,Amount,Description\n2026-10-05,10.00,Same\n2026-10-05,10.00,Same",
+      "USD",
+    );
+    expect(new Set(duplicates.rows.map((row) => row.externalId)).size).toBe(2);
   });
 });
 
@@ -207,5 +240,42 @@ describe("application workflow", () => {
         typeof value === "bigint" ? value.toString() : value,
       ),
     ).not.toThrow();
+  });
+
+  it("derives overdue status and preserves writes after a failed mutation", async () => {
+    const dashboard = await getDashboard();
+    expect(dashboard.invoices.find((invoice) => invoice.id === "inv_1044")?.status).toBe("overdue");
+    await expect(
+      updateState(() => {
+        throw new Error("expected validation failure");
+      }),
+    ).rejects.toThrow("expected validation failure");
+    const customer = await createCustomer({ name: "After Failure", email: "after@example.com" });
+    expect(customer.name).toBe("After Failure");
+  });
+
+  it("rejects invalid settings before mutating state", async () => {
+    await expect(saveSettings({ autoApplyThreshold: 4 })).rejects.toThrow();
+    const state = await getState();
+    expect(state.entity.settings.autoApplyThreshold).toBe(0.9);
+  });
+
+  it("generates unique postings across approve, undo, reapprove, and undo", async () => {
+    await approveTransaction("bank_2", { mode: "suggestion" });
+    await undoTransaction("bank_2");
+    await approveTransaction("bank_2", { mode: "suggestion" });
+    const beforeSecondUndo = snapshotFromStored(await getState());
+    const currentJournalId = beforeSecondUndo.transactions.find(
+      (item) => item.id === "bank_2",
+    )?.journalEntryId;
+    await undoTransaction("bank_2");
+    const afterSecondUndo = snapshotFromStored(await getState());
+    const matchingEntries = afterSecondUndo.journalEntries.filter(
+      (entry) => entry.sourceId === "bank_2",
+    );
+    expect(new Set(matchingEntries.map((entry) => entry.id)).size).toBe(matchingEntries.length);
+    expect(
+      afterSecondUndo.journalEntries.find((entry) => entry.id === currentJournalId)?.reversedBy,
+    ).toBeTruthy();
   });
 });

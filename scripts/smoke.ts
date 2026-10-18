@@ -4,6 +4,11 @@ import { getState, resetState } from "../lib/store";
 import { snapshotFromStored } from "../lib/store/serialize";
 
 async function main() {
+  if (process.env.NODE_ENV === "production" || process.env.STORAGE_ADAPTER === "postgres") {
+    throw new Error(
+      "Smoke reset is disabled in production or PostgreSQL mode; use an isolated test database",
+    );
+  }
   await resetState();
   const before = await getDashboard();
   console.log(`workspace: ${before.entity.name}`);

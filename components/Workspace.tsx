@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type View = "overview" | "reconcile" | "invoices" | "customers" | "ledger" | "reports" | "settings";
 type MoneyWire = { currency: string; minor: string };
@@ -12,6 +12,8 @@ type Dashboard = {
     timezone: string;
     settings: { autoApplyThreshold: number; feeToleranceMinor: string; aiProvider: string };
   };
+  reportingDate: string;
+  storage: { adapter: string; durable: boolean; ephemeral: boolean };
   metrics: {
     outstanding: MoneyWire;
     overdue: MoneyWire;
@@ -19,6 +21,8 @@ type Dashboard = {
     needsReview: number;
     matchedThisMonth: number;
   };
+  accounts: Account[];
+  transactions: Transaction[];
   aging: Array<{
     customerId: string;
     customerName: string;
@@ -60,6 +64,15 @@ type Match = {
   allocations: Array<{ invoiceId: string; amount: MoneyWire }>;
   suggestedAccountId?: string;
 };
+type Account = {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  control: string | null;
+  currency: string | null;
+  active: boolean;
+};
 type Invoice = {
   id: string;
   number: string;
@@ -68,6 +81,7 @@ type Invoice = {
   dueDate: string;
   total: MoneyWire;
   status: string;
+  outstanding?: MoneyWire;
   lines: Array<{ description: string }>;
 };
 type Customer = { id: string; name: string; email: string; company?: string };
@@ -95,7 +109,10 @@ type Reports = {
     equity: MoneyWire;
     difference: MoneyWire;
   };
+  asOf: string;
+  from: string;
 };
+type SessionInfo = { email: string; role: "admin" | "accountant" | "viewer"; expiresAt: number };
 
 const navItems: Array<{ id: View; label: string; icon: string }> = [
   { id: "overview", label: "Overview", icon: "grid" },
@@ -223,15 +240,16 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 function formatMoney(value?: MoneyWire, compact = false) {
   if (!value) return "—";
-  const minor = BigInt(value.minor);
   const digits = value.currency === "JPY" ? 0 : 2;
-  const number = Number(minor) / 10 ** digits;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: value.currency,
-    maximumFractionDigits: digits,
-    notation: compact && Math.abs(number) >= 1000 ? "compact" : "standard",
-  }).format(number);
+  const minor = BigInt(value.minor);
+  const negative = minor < 0n;
+  const absolute = (negative ? -minor : minor).toString().padStart(digits + 1, "0");
+  const whole = absolute.slice(0, -digits || undefined).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fraction = digits ? `.${absolute.slice(-digits)}` : "";
+  const formatted = `${negative ? "-" : ""}${value.currency} ${whole}${fraction}`;
+  return compact && whole.length > 7
+    ? `${negative ? "-" : ""}${value.currency} ${whole.slice(0, -6)}M`
+    : formatted;
 }
 
 function dateLabel(value: string) {
@@ -272,15 +290,41 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error ?? "Request failed");
+  if (!response.ok) {
+    const error = new Error(payload.error ?? "Request failed") as Error & {
+      status?: number;
+      code?: string;
+    };
+    error.status = response.status;
+    error.code = payload.code;
+    throw error;
+  }
   return payload as T;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: string[][]): void {
+  const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Workspace() {
   const [view, setView] = useState<View>("overview");
+  const [session, setSession] = useState<SessionInfo | null | undefined>(undefined);
+  const [authConfigured, setAuthConfigured] = useState(true);
+  const [authError, setAuthError] = useState("");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [reports, setReports] = useState<Reports | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
+  const [reportsError, setReportsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -288,6 +332,7 @@ export default function Workspace() {
   const [modal, setModal] = useState<"invoice" | "customer" | "import" | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -295,13 +340,61 @@ export default function Workspace() {
     try {
       setDashboard(await requestJson<Dashboard>("/api/dashboard"));
     } catch (reason) {
+      if ((reason as { status?: number })?.status === 401) setSession(null);
       setError(reason instanceof Error ? reason.message : "Unable to load workspace");
     } finally {
       setLoading(false);
     }
   }, []);
+  const loadLedger = useCallback(async () => {
+    setLedgerLoading(true);
+    setLedgerError("");
+    try {
+      setLedger(await requestJson<LedgerEntry[]>("/api/ledger"));
+    } catch (reason) {
+      setLedgerError(reason instanceof Error ? reason.message : "Unable to load ledger");
+    } finally {
+      setLedgerLoading(false);
+    }
+  }, []);
+  const loadReports = useCallback(async () => {
+    setReportsLoading(true);
+    setReportsError("");
+    try {
+      setReports(await requestJson<Reports>("/api/reports"));
+    } catch (reason) {
+      setReportsError(reason instanceof Error ? reason.message : "Unable to load reports");
+    } finally {
+      setReportsLoading(false);
+    }
+  }, []);
   useEffect(() => {
-    void reload();
+    let active = true;
+    void fetch("/api/auth/session", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = (await response.json()) as {
+          configured?: boolean;
+          session?: SessionInfo | null;
+        };
+        if (!active) return;
+        setAuthConfigured(payload.configured !== false);
+        if (payload.session) {
+          setSession(payload.session);
+          await reload();
+        } else {
+          setSession(null);
+        }
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setSession(null);
+        setAuthError(
+          reason instanceof Error ? reason.message : "Authentication service unavailable",
+        );
+      });
+    return () => {
+      active = false;
+    };
   }, [reload]);
   useEffect(() => {
     if (toast) {
@@ -310,15 +403,19 @@ export default function Workspace() {
     }
   }, [toast]);
   useEffect(() => {
-    if (view === "ledger")
-      void requestJson<LedgerEntry[]>("/api/ledger")
-        .then(setLedger)
-        .catch((reason) => setError(reason.message));
-    if (view === "reports")
-      void requestJson<Reports>("/api/reports")
-        .then(setReports)
-        .catch((reason) => setError(reason.message));
-  }, [view]);
+    if (view === "ledger") void loadLedger();
+    if (view === "reports") void loadReports();
+  }, [view, loadLedger, loadReports]);
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
 
   const action = async (label: string, fn: () => Promise<unknown>) => {
     setWorking(label);
@@ -328,21 +425,38 @@ export default function Workspace() {
       setToast(label);
       await reload();
     } catch (reason) {
+      if ((reason as { status?: number })?.status === 401) setSession(null);
       setError(reason instanceof Error ? reason.message : "Action failed");
     } finally {
       setWorking(null);
     }
   };
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setSession(null);
+    setDashboard(null);
+  };
   const activeTransaction = dashboard?.reviewQueue.find(
     (item) => item.transaction.id === selectedId,
   );
 
-  if (loading && !dashboard)
+  if (session === undefined || (session && loading && !dashboard))
     return (
       <div className="loading-screen">
         <div className="loader-mark">LF</div>
         <p>Preparing your books…</p>
       </div>
+    );
+  if (!session)
+    return (
+      <LoginScreen
+        configured={authConfigured}
+        initialError={authError}
+        onLogin={(value) => {
+          setSession(value);
+          void reload();
+        }}
+      />
     );
   if (!dashboard)
     return (
@@ -372,7 +486,7 @@ export default function Workspace() {
           <div className="entity-avatar">NF</div>
           <div className="entity-copy">
             <strong>{dashboard.entity.name}</strong>
-            <span>Demo workspace · USD</span>
+            <span>Workspace · {dashboard.entity.currency}</span>
           </div>
           <span className="switcher-chevron">⌄</span>
         </div>
@@ -403,12 +517,12 @@ export default function Workspace() {
             </button>
           </div>
           <div className="user-row">
-            <div className="user-avatar">JL</div>
+            <div className="user-avatar">{initials(session.email.split("@")[0])}</div>
             <div>
-              <strong>Jordan Lee</strong>
-              <span>Administrator</span>
+              <strong>{session.email}</strong>
+              <span>{session.role}</span>
             </div>
-            <button className="icon-button" aria-label="User menu">
+            <button className="icon-button" aria-label="Sign out" onClick={() => void logout()}>
               <Icon name="more" />
             </button>
           </div>
@@ -425,20 +539,28 @@ export default function Workspace() {
             <label className="search-box">
               <Icon name="search" size={16} />
               <input
+                ref={searchRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search anything…"
               />
               <kbd>⌘ K</kbd>
             </label>
-            <span className="sync-status">
-              <i /> Synced just now
+            <span
+              className={`sync-status ${dashboard.storage.ephemeral ? "storage-warning" : ""}`}
+              title={
+                dashboard.storage.ephemeral
+                  ? "This demo uses ephemeral storage"
+                  : "Connected to durable storage"
+              }
+            >
+              <i /> {dashboard.storage.ephemeral ? "Demo storage" : "Synced just now"}
             </span>
             <button className="icon-button notification" aria-label="Notifications">
               <span className="notification-dot" />
               <span>♧</span>
             </button>
-            <div className="top-avatar">JL</div>
+            <div className="top-avatar">{initials(session.email.split("@")[0])}</div>
           </div>
         </header>
         {error && (
@@ -457,11 +579,13 @@ export default function Workspace() {
               dashboard={dashboard}
               onNavigate={setView}
               onCreate={() => setModal("invoice")}
+              onImport={() => setModal("import")}
             />
           )}
           {view === "reconcile" && (
             <Reconcile
               dashboard={dashboard}
+              query={query}
               working={working}
               selectedId={selectedId}
               onSelect={setSelectedId}
@@ -475,14 +599,31 @@ export default function Workspace() {
           {view === "customers" && (
             <Customers dashboard={dashboard} query={query} onCreate={() => setModal("customer")} />
           )}
-          {view === "ledger" && <Ledger entries={ledger} />}
-          {view === "reports" && <ReportsView reports={reports} />}
-          {view === "settings" && <Settings dashboard={dashboard} onSaved={() => void reload()} />}
+          {view === "ledger" && (
+            <Ledger
+              entries={ledger}
+              loading={ledgerLoading}
+              error={ledgerError}
+              onRetry={() => void loadLedger()}
+            />
+          )}
+          {view === "reports" && (
+            <ReportsView
+              reports={reports}
+              loading={reportsLoading}
+              error={reportsError}
+              onRetry={() => void loadReports()}
+            />
+          )}
+          {view === "settings" && (
+            <Settings dashboard={dashboard} onSaved={() => void reload()} onError={setError} />
+          )}
         </div>
       </main>
       {activeTransaction && (
         <ReviewDrawer
           item={activeTransaction}
+          accounts={dashboard.accounts}
           onClose={() => setSelectedId(null)}
           onAction={action}
           working={working}
@@ -491,7 +632,10 @@ export default function Workspace() {
       {modal === "invoice" && (
         <InvoiceModal
           dashboard={dashboard}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setModal(null);
+            void reload();
+          }}
           onCreated={() => {
             setModal(null);
             setToast("Invoice issued");
@@ -511,7 +655,10 @@ export default function Workspace() {
       )}
       {modal === "import" && (
         <ImportModal
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setModal(null);
+            void reload();
+          }}
           onImported={(message) => {
             setModal(null);
             setToast(message);
@@ -531,22 +678,129 @@ export default function Workspace() {
   );
 }
 
+function LoginScreen({
+  configured,
+  initialError,
+  onLogin,
+}: {
+  configured: boolean;
+  initialError: string;
+  onLogin: (session: SessionInfo) => void;
+}) {
+  const [email, setEmail] = useState("admin@ledgerflow.local");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(initialError);
+  const [working, setWorking] = useState(false);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setWorking(true);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Unable to sign in");
+      onLogin(payload.session as SessionInfo);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to sign in");
+    } finally {
+      setWorking(false);
+    }
+  };
+  return (
+    <main className="auth-screen">
+      <div className="auth-card">
+        <div className="brand auth-brand">
+          <div className="brand-mark">LF</div>
+          <div>
+            <strong>ledgerflow</strong>
+            <span>finance workspace</span>
+          </div>
+        </div>
+        <div className="auth-heading">
+          <span className="eyebrow">Secure workspace access</span>
+          <h1>Welcome back</h1>
+          <p>Sign in to review transactions and manage your books.</p>
+        </div>
+        {!configured ? (
+          <div className="form-error">
+            Production authentication is not configured. Set <code>AUTH_SECRET</code>,{" "}
+            <code>APP_AUTH_EMAIL</code>, and <code>APP_AUTH_PASSWORD</code> in the deployment
+            environment.
+          </div>
+        ) : (
+          <form className="modal-form" onSubmit={submit}>
+            {error && <div className="form-error">{error}</div>}
+            <label>
+              Email address
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                autoComplete="username"
+                required
+              />
+            </label>
+            <label>
+              Password
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
+              <small>
+                Local development fallback: password <code>demo</code>.
+              </small>
+            </label>
+            <button className="button primary full" disabled={working}>
+              {working ? "Signing in…" : "Sign in"} <Icon name="arrow" size={15} />
+            </button>
+          </form>
+        )}
+        <div className="auth-foot">
+          <Icon name="check" size={14} /> Your financial data is protected by an encrypted session.
+        </div>
+      </div>
+    </main>
+  );
+}
+
 function Overview({
   dashboard,
   onNavigate,
   onCreate,
+  onImport,
 }: {
   dashboard: Dashboard;
   onNavigate: (view: View) => void;
   onCreate: () => void;
+  onImport: () => void;
 }) {
   const maxAging = Math.max(...dashboard.aging.map((row) => Number(row.total.minor)), 1);
+  const overdueCount = dashboard.invoices.filter((invoice) => invoice.status === "overdue").length;
+  const openCount = dashboard.invoices.filter(
+    (invoice) => BigInt(invoice.outstanding?.minor ?? invoice.total.minor) > 0n,
+  ).length;
+  const highConfidenceCount = dashboard.reviewQueue.filter(
+    (item) => (item.match?.confidence ?? 0) >= dashboard.entity.settings.autoApplyThreshold,
+  ).length;
+  const reportingDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${dashboard.reportingDate}T12:00:00`));
   return (
     <>
       <div className="page-heading hero-heading">
         <div>
           <div className="eyebrow">
-            <span className="eyebrow-dot" /> Tuesday, October 18, 2026
+            <span className="eyebrow-dot" /> {reportingDate}
           </div>
           <h1>
             Good morning, Jordan <span className="wave">✦</span>
@@ -554,7 +808,7 @@ function Overview({
           <p>Here’s what’s happening across {dashboard.entity.name} today.</p>
         </div>
         <div className="heading-actions">
-          <button className="button secondary" onClick={() => onNavigate("reconcile")}>
+          <button className="button secondary" onClick={onImport}>
             <Icon name="upload" size={16} /> Import transactions
           </button>
           <button className="button primary" onClick={onCreate}>
@@ -566,14 +820,14 @@ function Overview({
         <MetricCard
           label="Outstanding receivables"
           value={formatMoney(dashboard.metrics.outstanding)}
-          sub="Across 5 open invoices"
+          sub={`Across ${openCount} open invoices`}
           tone="blue"
           icon="↗"
         />
         <MetricCard
           label="Overdue"
           value={formatMoney(dashboard.metrics.overdue)}
-          sub="2 invoices need attention"
+          sub={`${overdueCount} invoice${overdueCount === 1 ? "" : "s"} need attention`}
           tone="coral"
           icon="!"
         />
@@ -587,7 +841,7 @@ function Overview({
         <MetricCard
           label="Needs your review"
           value={String(dashboard.metrics.needsReview).padStart(2, "0")}
-          sub="4 high-confidence suggestions"
+          sub={`${highConfidenceCount} high-confidence suggestion${highConfidenceCount === 1 ? "" : "s"}`}
           tone="amber"
           icon="✦"
           action={() => onNavigate("reconcile")}
@@ -608,7 +862,7 @@ function Overview({
             <div className="aging-total">
               <span>Total outstanding</span>
               <strong>{formatMoney(dashboard.metrics.outstanding)}</strong>
-              <small>as of Oct 18, 2026</small>
+              <small>as of {dateLabel(dashboard.reportingDate)}</small>
             </div>
             <div className="aging-legend">
               <span>
@@ -685,7 +939,7 @@ function Overview({
             <AttentionItem
               icon="!"
               tone="coral"
-              title="2 overdue invoices"
+              title={`${overdueCount} overdue invoice${overdueCount === 1 ? "" : "s"}`}
               detail={`${formatMoney(dashboard.metrics.overdue)} outstanding`}
               action="View"
               onClick={() => onNavigate("invoices")}
@@ -693,8 +947,11 @@ function Overview({
             <AttentionItem
               icon="users"
               tone="amber"
-              title="1 customer follow-up"
-              detail="Acme Industries · due today"
+              title="Customer follow-up"
+              detail={
+                dashboard.aging.find((row) => overdueMinor(row) > 0n)?.customerName ??
+                "No overdue customer"
+              }
               action="Open"
               onClick={() => onNavigate("customers")}
             />
@@ -850,6 +1107,7 @@ function EmptyState({
 
 function Reconcile({
   dashboard,
+  query,
   working,
   selectedId,
   onSelect,
@@ -857,6 +1115,7 @@ function Reconcile({
   onImport,
 }: {
   dashboard: Dashboard;
+  query: string;
   working: string | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -864,7 +1123,8 @@ function Reconcile({
   onImport: () => void;
 }) {
   const [tab, setTab] = useState<"review" | "posted" | "excluded">("review");
-  const rows = dashboard.recentTransactions
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const rows = dashboard.transactions
     .filter((transaction) =>
       tab === "review"
         ? transaction.status === "suggested" || transaction.status === "unreviewed"
@@ -872,10 +1132,17 @@ function Reconcile({
           ? transaction.status === "posted"
           : transaction.status === "excluded",
     )
+    .filter((transaction) =>
+      `${transaction.description} ${transaction.reference} ${transaction.counterparty ?? ""}`
+        .toLowerCase()
+        .includes(query.toLowerCase()),
+    )
     .map((transaction) => ({
       transaction,
       ...dashboard.reviewQueue.find((item) => item.transaction.id === transaction.id),
     }));
+  const visibleIds = rows.map((row) => row.transaction.id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedRows.has(id));
   return (
     <>
       <div className="page-heading">
@@ -917,14 +1184,14 @@ function Reconcile({
         <div>
           <span className="summary-dot green" />
           <strong>
-            {dashboard.recentTransactions.filter((item) => item.status === "posted").length}
+            {dashboard.transactions.filter((item) => item.status === "posted").length}
           </strong>
           <span>Posted this period</span>
         </div>
         <div>
           <span className="summary-dot gray" />
           <strong>
-            {dashboard.recentTransactions.filter((item) => item.status === "unreviewed").length}
+            {dashboard.transactions.filter((item) => item.status === "unreviewed").length}
           </strong>
           <span>Unidentified</span>
         </div>
@@ -963,7 +1230,20 @@ function Reconcile({
               <thead>
                 <tr>
                   <th>
-                    <input type="checkbox" aria-label="Select all" />
+                    <input
+                      type="checkbox"
+                      aria-label="Select all"
+                      checked={allSelected}
+                      onChange={(event) =>
+                        setSelectedRows((current) => {
+                          const next = new Set(current);
+                          visibleIds.forEach((id) =>
+                            event.target.checked ? next.add(id) : next.delete(id),
+                          );
+                          return next;
+                        })
+                      }
+                    />
                   </th>
                   <th>Date</th>
                   <th>Counterparty / memo</th>
@@ -980,6 +1260,15 @@ function Reconcile({
                     key={row.transaction.id}
                     row={row}
                     selected={selectedId === row.transaction.id}
+                    checked={selectedRows.has(row.transaction.id)}
+                    onToggle={(checked) =>
+                      setSelectedRows((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(row.transaction.id);
+                        else next.delete(row.transaction.id);
+                        return next;
+                      })
+                    }
                     onSelect={onSelect}
                     onAction={onAction}
                   />
@@ -1007,11 +1296,15 @@ function Reconcile({
 function TransactionRow({
   row,
   selected,
+  checked,
+  onToggle,
   onSelect,
   onAction,
 }: {
   row: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
   selected: boolean;
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
   onSelect: (id: string) => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
 }) {
@@ -1022,11 +1315,24 @@ function TransactionRow({
       ? "Suggested category"
       : "No confident match";
   return (
-    <tr className={selected ? "selected-row" : ""} onClick={() => onSelect(transaction.id)}>
+    <tr
+      className={selected ? "selected-row" : ""}
+      tabIndex={0}
+      aria-selected={selected}
+      onClick={() => onSelect(transaction.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(transaction.id);
+        }
+      }}
+    >
       <td>
         <input
           type="checkbox"
+          checked={checked}
           aria-label={`Select ${transaction.description}`}
+          onChange={(event) => onToggle(event.target.checked)}
           onClick={(event) => event.stopPropagation()}
         />
       </td>
@@ -1067,17 +1373,27 @@ function TransactionRow({
           className="row-action"
           onClick={(event) => {
             event.stopPropagation();
-            if (transaction.status !== "posted")
+            if (transaction.status !== "posted" && (row.invoice || row.match?.suggestedAccountId))
               void onAction("Transaction approved", () =>
                 requestJson(`/api/reconcile/${transaction.id}/approve`, {
                   method: "POST",
                   body: JSON.stringify({ mode: "suggestion" }),
                 }),
               );
+            else if (transaction.status !== "posted") onSelect(transaction.id);
           }}
           aria-label="Approve transaction"
         >
-          <Icon name={transaction.status === "posted" ? "check" : "arrow"} size={16} />
+          <Icon
+            name={
+              transaction.status === "posted"
+                ? "check"
+                : row.invoice || row.match?.suggestedAccountId
+                  ? "arrow"
+                  : "search"
+            }
+            size={16}
+          />
         </button>
       </td>
     </tr>
@@ -1095,23 +1411,39 @@ function Confidence({ value }: { value: number }) {
 
 function ReviewDrawer({
   item,
+  accounts,
   onClose,
   onAction,
   working,
 }: {
   item: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
+  accounts: Account[];
   onClose: () => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
   working: string | null;
 }) {
   const { transaction, match, invoice, customer } = item;
+  const [accountId, setAccountId] = useState(
+    match?.suggestedAccountId ?? (transaction.flow === "inflow" ? "acct_unapplied" : ""),
+  );
+  const selectedAccount = accounts.find((account) => account.id === accountId);
+  const needsCategory = !invoice || transaction.flow === "outflow";
+  const canPost = !needsCategory || Boolean(accountId);
   return (
     <div className="drawer-backdrop" onClick={onClose}>
-      <aside className="review-drawer" onClick={(event) => event.stopPropagation()}>
+      <aside
+        className="review-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transaction-review-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="drawer-header">
           <div>
             <span className="eyebrow">Transaction review</span>
-            <h2>{transaction.counterparty || transaction.description}</h2>
+            <h2 id="transaction-review-title">
+              {transaction.counterparty || transaction.description}
+            </h2>
             <span className="drawer-reference">
               {transaction.reference || "No reference"} · {dateLabel(transaction.date)}
             </span>
@@ -1164,6 +1496,31 @@ function ReviewDrawer({
             </div>
           )}
         </div>
+        {needsCategory && transaction.status !== "posted" && (
+          <div className="drawer-section">
+            <label className="drawer-label" htmlFor="posting-account">
+              Post to account
+            </label>
+            <select
+              id="posting-account"
+              className="drawer-select"
+              value={accountId}
+              onChange={(event) => setAccountId(event.target.value)}
+            >
+              <option value="">Choose an account…</option>
+              {accounts
+                .filter((account) => account.control !== "bank")
+                .map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.code} · {account.name}
+                  </option>
+                ))}
+            </select>
+            <small className="drawer-help">
+              Choose the offset account. The bank side is created automatically.
+            </small>
+          </div>
+        )}
         {match?.allocations && match.allocations.length > 1 && (
           <div className="drawer-section">
             <span className="drawer-label">Split allocation</span>
@@ -1182,13 +1539,17 @@ function ReviewDrawer({
               <span>
                 {transaction.flow === "inflow"
                   ? "Operating Bank"
-                  : (match?.suggestedAccountId ?? "Expense account")}
+                  : (selectedAccount?.name ?? "Expense account")}
               </span>
               <strong>{formatMoney(transaction.amount)}</strong>
             </div>
             <div>
               <span>
-                {transaction.flow === "inflow" ? "Accounts Receivable" : "Operating Bank"}
+                {transaction.flow === "inflow"
+                  ? invoice
+                    ? "Accounts Receivable"
+                    : (selectedAccount?.name ?? "Unapplied customer cash")
+                  : "Operating Bank"}
               </span>
               <strong>{formatMoney(transaction.amount)}</strong>
             </div>
@@ -1222,23 +1583,25 @@ function ReviewDrawer({
                     }),
                   )
                 }
-                disabled={working !== null}
+                disabled={working !== null || !canPost}
               >
                 Exclude
               </button>
               <button
                 className="button primary full"
                 onClick={() =>
-                  onAction("Transaction approved", () =>
+                  onAction(invoice ? "Transaction approved" : "Transaction categorized", () =>
                     requestJson(`/api/reconcile/${transaction.id}/approve`, {
                       method: "POST",
-                      body: JSON.stringify({ mode: "suggestion" }),
+                      body: JSON.stringify(
+                        needsCategory ? { mode: "category", accountId } : { mode: "suggestion" },
+                      ),
                     }),
                   )
                 }
                 disabled={working !== null}
               >
-                <Icon name="check" size={15} /> Approve & post
+                <Icon name="check" size={15} /> {invoice ? "Approve & post" : "Categorize & post"}
               </button>
             </>
           )}
@@ -1274,7 +1637,24 @@ function Invoices({
           <p>Track what’s been billed, collected, and what’s next.</p>
         </div>
         <div className="heading-actions">
-          <button className="button secondary">
+          <button
+            className="button secondary"
+            onClick={() =>
+              downloadCsv(
+                "ledgerflow-invoices.csv",
+                ["Invoice", "Customer", "Issue date", "Due date", "Amount", "Status"],
+                invoices.map((invoice) => [
+                  invoice.number,
+                  dashboard.customers.find((customer) => customer.id === invoice.customerId)
+                    ?.name ?? "",
+                  invoice.issueDate,
+                  invoice.dueDate,
+                  formatMoney(invoice.total),
+                  statusLabel(invoice.status),
+                ]),
+              )
+            }
+          >
             <Icon name="download" size={16} /> Export
           </button>
           <button className="button primary" onClick={onCreate}>
@@ -1487,7 +1867,46 @@ function Customers({
   );
 }
 
-function Ledger({ entries }: { entries: LedgerEntry[] }) {
+function Ledger({
+  entries,
+  loading,
+  error,
+  onRetry,
+}: {
+  entries: LedgerEntry[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  if (loading)
+    return (
+      <div className="card report-loading">
+        <div className="loader-mark small">LF</div>
+        <p>Loading your journal…</p>
+      </div>
+    );
+  if (error)
+    return (
+      <div className="card error-state">
+        <div className="empty-icon">
+          <Icon name="close" size={22} />
+        </div>
+        <h3>Unable to load the ledger</h3>
+        <p>{error}</p>
+        <button className="button secondary small" onClick={onRetry}>
+          Try again
+        </button>
+      </div>
+    );
+  const balanced = entries.every((entry) => {
+    const debit = entry.lines
+      .filter((line) => line.side === "debit")
+      .reduce((sum, line) => sum + BigInt(line.amount.minor), 0n);
+    const credit = entry.lines
+      .filter((line) => line.side === "credit")
+      .reduce((sum, line) => sum + BigInt(line.amount.minor), 0n);
+    return debit === credit;
+  });
   return (
     <>
       <div className="page-heading">
@@ -1497,7 +1916,25 @@ function Ledger({ entries }: { entries: LedgerEntry[] }) {
           <p>Immutable, balanced entries for every business event.</p>
         </div>
         <div className="heading-actions">
-          <button className="button secondary">
+          <button
+            className="button secondary"
+            onClick={() =>
+              downloadCsv(
+                "ledgerflow-ledger.csv",
+                ["Date", "Entry", "Description", "Account", "Side", "Amount"],
+                entries.flatMap((entry) =>
+                  entry.lines.map((line) => [
+                    entry.date,
+                    entry.id,
+                    entry.description,
+                    line.accountId,
+                    line.side,
+                    formatMoney(line.amount),
+                  ]),
+                ),
+              )
+            }
+          >
             <Icon name="download" size={16} /> Export CSV
           </button>
           <button className="button primary">
@@ -1505,13 +1942,17 @@ function Ledger({ entries }: { entries: LedgerEntry[] }) {
           </button>
         </div>
       </div>
-      <div className="ledger-integrity">
+      <div className={`ledger-integrity ${balanced ? "" : "ledger-warning"}`}>
         <div className="integrity-icon">
-          <Icon name="check" size={17} />
+          <Icon name={balanced ? "check" : "close"} size={17} />
         </div>
         <div>
-          <strong>Your ledger is balanced</strong>
-          <span>Every posted journal entry satisfies the debit = credit invariant.</span>
+          <strong>{balanced ? "Your ledger is balanced" : "Ledger requires attention"}</strong>
+          <span>
+            {balanced
+              ? "Every posted journal entry satisfies the debit = credit invariant."
+              : "One or more journal entries do not balance."}
+          </span>
         </div>
         <span className="integrity-date">Last checked just now</span>
       </div>
@@ -1570,13 +2011,36 @@ function Ledger({ entries }: { entries: LedgerEntry[] }) {
   );
 }
 
-function ReportsView({ reports }: { reports: Reports | null }) {
+function ReportsView({
+  reports,
+  loading,
+  error,
+  onRetry,
+}: {
+  reports: Reports | null;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
   const [tab, setTab] = useState<"aging" | "trial" | "pnl">("aging");
-  if (!reports)
+  if (loading)
     return (
       <div className="card report-loading">
         <div className="loader-mark small">LF</div>
         <p>Building reports from your journal…</p>
+      </div>
+    );
+  if (error || !reports)
+    return (
+      <div className="card error-state">
+        <div className="empty-icon">
+          <Icon name="close" size={22} />
+        </div>
+        <h3>Unable to build reports</h3>
+        <p>{error || "No report data is available yet."}</p>
+        <button className="button secondary small" onClick={onRetry}>
+          Try again
+        </button>
       </div>
     );
   return (
@@ -1587,7 +2051,42 @@ function ReportsView({ reports }: { reports: Reports | null }) {
           <h1>Reports</h1>
           <p>Everything is calculated directly from posted journal lines.</p>
         </div>
-        <button className="button secondary">
+        <button
+          className="button secondary"
+          onClick={() =>
+            downloadCsv(
+              `ledgerflow-${tab}.csv`,
+              tab === "aging"
+                ? ["Customer", "Current", "1-30", "31-60", "61-90", "90+", "Total"]
+                : tab === "trial"
+                  ? ["Account", "Type", "Debits", "Credits", "Balance"]
+                  : ["Metric", "Amount"],
+              tab === "aging"
+                ? reports.aging.map((row) => [
+                    row.customerName,
+                    formatMoney(row.current),
+                    formatMoney(row.overdue1to30),
+                    formatMoney(row.overdue31to60),
+                    formatMoney(row.overdue61to90),
+                    formatMoney(row.overdue90Plus),
+                    formatMoney(row.total),
+                  ])
+                : tab === "trial"
+                  ? reports.trialBalance.map((row) => [
+                      `${row.accountCode} · ${row.accountName}`,
+                      row.accountType,
+                      formatMoney(row.debit),
+                      formatMoney(row.credit),
+                      formatMoney(row.balance),
+                    ])
+                  : [
+                      ["Income", formatMoney(reports.pnl.incomeTotal)],
+                      ["Expenses", formatMoney(reports.pnl.expenseTotal)],
+                      ["Net profit", formatMoney(reports.pnl.net)],
+                    ],
+            )
+          }
+        >
           <Icon name="download" size={16} /> Export report
         </button>
       </div>
@@ -1620,10 +2119,16 @@ function ReportsView({ reports }: { reports: Reports | null }) {
         </div>
         <div className="report-kpi">
           <span>Balance sheet check</span>
-          <strong className="positive">
-            <Icon name="check" size={18} /> Balanced
-          </strong>
-          <small>As of Oct 18, 2026</small>
+          {reports.balanceSheet.difference.minor === "0" ? (
+            <strong className="positive">
+              <Icon name="check" size={18} /> Balanced
+            </strong>
+          ) : (
+            <strong className="negative">
+              <Icon name="close" size={18} /> Out of balance
+            </strong>
+          )}
+          <small>As of {dateLabel(reports.asOf)}</small>
         </div>
       </div>
       <section className="card table-card">
@@ -1739,24 +2244,46 @@ function ReportsView({ reports }: { reports: Reports | null }) {
   );
 }
 
-function Settings({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () => void }) {
+function Settings({
+  dashboard,
+  onSaved,
+  onError,
+}: {
+  dashboard: Dashboard;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
   const [threshold, setThreshold] = useState(
     String(Math.round(dashboard.entity.settings.autoApplyThreshold * 100)),
   );
   const [provider, setProvider] = useState(dashboard.entity.settings.aiProvider);
+  const [name, setName] = useState(dashboard.entity.name);
+  const [legalName, setLegalName] = useState(dashboard.entity.legalName);
+  const [currency, setCurrency] = useState(dashboard.entity.currency);
+  const [timezone, setTimezone] = useState(dashboard.entity.timezone);
+  const [feeToleranceMinor, setFeeToleranceMinor] = useState(
+    dashboard.entity.settings.feeToleranceMinor,
+  );
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
+    onError("");
     try {
-      const response = await fetch("/api/settings", {
+      await requestJson("/api/settings", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoApplyThreshold: Number(threshold) / 100, aiProvider: provider }),
+        body: JSON.stringify({
+          name,
+          legalName,
+          currency,
+          timezone,
+          autoApplyThreshold: Number(threshold) / 100,
+          feeToleranceMinor,
+          aiProvider: provider,
+        }),
       });
-      if (!response.ok) throw new Error("Could not save settings");
       onSaved();
-    } catch {
-      /* parent will show the current value on the next load */
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Could not save settings");
     } finally {
       setSaving(false);
     }
@@ -1791,27 +2318,27 @@ function Settings({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () =>
             <div className="settings-form">
               <label>
                 Workspace name
-                <input defaultValue={dashboard.entity.name} />
+                <input value={name} onChange={(event) => setName(event.target.value)} />
               </label>
               <label>
                 Legal name
-                <input defaultValue={dashboard.entity.legalName} />
+                <input value={legalName} onChange={(event) => setLegalName(event.target.value)} />
               </label>
               <div className="form-row">
                 <label>
                   Base currency
-                  <select defaultValue={dashboard.entity.currency}>
-                    <option>USD — US Dollar</option>
-                    <option>EUR — Euro</option>
-                    <option>GBP — Pound Sterling</option>
+                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                    <option value="USD">USD — US Dollar</option>
+                    <option value="EUR">EUR — Euro</option>
+                    <option value="GBP">GBP — Pound Sterling</option>
                   </select>
                 </label>
                 <label>
                   Timezone
-                  <select defaultValue={dashboard.entity.timezone}>
-                    <option>America/New_York</option>
-                    <option>America/Los_Angeles</option>
-                    <option>UTC</option>
+                  <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
+                    <option value="America/New_York">America/New_York</option>
+                    <option value="America/Los_Angeles">America/Los_Angeles</option>
+                    <option value="UTC">UTC</option>
                   </select>
                 </label>
               </div>
@@ -1838,9 +2365,14 @@ function Settings({ dashboard, onSaved }: { dashboard: Dashboard; onSaved: () =>
               </label>
               <label>
                 Fee tolerance
-                <input defaultValue="$1.00" />
+                <input
+                  value={feeToleranceMinor}
+                  onChange={(event) => setFeeToleranceMinor(event.target.value.replace(/\D/g, ""))}
+                  inputMode="numeric"
+                />
                 <small>
-                  Payments within this tolerance can be written off to Bank Fees after approval.
+                  Minor units. For USD, 100 means $1.00. Payments within this tolerance can be
+                  written off to Bank Fees after approval.
                 </small>
               </label>
             </div>
@@ -1902,11 +2434,17 @@ function ModalFrame({
 }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(event) => event.stopPropagation()}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="modal-header">
           <div>
             <span className="eyebrow">{eyebrow}</span>
-            <h2>{title}</h2>
+            <h2 id="modal-title">{title}</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
             <Icon name="close" />
@@ -2098,6 +2636,8 @@ function ImportModal({
   const [fileName, setFileName] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [rowErrors, setRowErrors] = useState<Array<{ row: number; message: string }>>([]);
+  const [result, setResult] = useState("");
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
@@ -2110,9 +2650,11 @@ function ImportModal({
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Import failed");
-      onImported(
-        `${data.imported} transactions imported${data.skipped ? ` · ${data.skipped} duplicates skipped` : ""}`,
-      );
+      setRowErrors(data.errors ?? []);
+      const message = `${data.imported} transactions imported${data.skipped ? ` · ${data.skipped} duplicates skipped` : ""}`;
+      if (data.errors?.length)
+        setResult(`${message} · ${data.errors.length} row(s) need attention`);
+      else onImported(message);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Import failed");
     } finally {
@@ -2123,6 +2665,7 @@ function ImportModal({
     <ModalFrame title="Import bank transactions" eyebrow="Cash application" onClose={onClose}>
       <form className="modal-form" onSubmit={submit}>
         {error && <div className="form-error">{error}</div>}
+        {result && <div className="import-result">{result}</div>}
         <label className="upload-zone">
           <input
             type="file"
@@ -2148,6 +2691,17 @@ function ImportModal({
           </div>
           <pre>{csv.trim().split("\n").slice(0, 4).join("\n")}</pre>
         </div>
+        {rowErrors.length > 0 && (
+          <div className="import-errors">
+            <strong>Rows that could not be imported</strong>
+            {rowErrors.map((item) => (
+              <div key={`${item.row}-${item.message}`}>
+                <b>Row {item.row}</b>
+                <span>{item.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" className="button quiet" onClick={onClose}>
             Cancel

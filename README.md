@@ -32,6 +32,8 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The first request creates a seeded workspace with customers, invoices, bank transactions, proposed matches, and a balanced ledger in `data/ledgerflow.json`.
 
+In development, sign in with `admin@ledgerflow.local` and password `demo` when no auth variables are configured. Never use those fallback credentials in a deployed environment.
+
 ## Checks
 
 Run the same checks used by CI/build environments:
@@ -42,6 +44,7 @@ npm run lint             # ESLint with Next.js and TypeScript rules
 npm run typecheck        # strict TypeScript check
 npm run build            # production Next.js build
 npm run smoke            # approve a payment and verify ledger/report invariants
+npm run db:migrate       # apply the shared PostgreSQL table (requires DATABASE_URL)
 npm run vercel:deploy    # deploy a production build after Vercel authentication
 ```
 
@@ -103,7 +106,11 @@ The included Dockerfile builds a standalone Next.js image:
 docker run --rm -p 3000:3000 -v ledgerflow-data:/app/data ledgerflow
 ```
 
-For a single-instance deployment, persist `/app/data`. On Vercel, the demo automatically uses `/tmp` so the deployed preview remains interactive, but `/tmp` is ephemeral and must not be treated as financial persistence. For a multi-instance SaaS deployment, implement the `StorageState` repository against PostgreSQL and make `STORAGE_ADAPTER=postgres` fail closed until `DATABASE_URL` is present. The domain and application layer deliberately do not depend on JSON-specific behavior, so this migration is isolated to `lib/store/`.
+For a single-instance development deployment, persist `/app/data`. Production now supports a shared Neon/PostgreSQL state adapter. Set `STORAGE_ADAPTER=postgres`, `DATABASE_URL`, `AUTH_SECRET`, `APP_AUTH_EMAIL`, and a strong `APP_AUTH_PASSWORD`. The application fails closed in production when durable storage or authentication is not configured. `ALLOW_EPHEMERAL_STORAGE=true` is available only for an explicitly disposable demo and should never be used for financial records.
+
+Before the first production request, run `npm run db:migrate` against the production database. The adapter also creates the table defensively, but migrations should be applied explicitly as part of release automation.
+
+Generate a strong application secret with `openssl rand -base64 32`, set it as `AUTH_SECRET`, and configure `APP_AUTH_PASSWORD` with at least 12 characters. In Vercel, add these values under **Project Settings → Environment Variables** for Production and redeploy. Do not commit `.env.local` or provider tokens.
 
 ### Production hardening roadmap
 
