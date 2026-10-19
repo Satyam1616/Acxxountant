@@ -107,7 +107,7 @@ The included Dockerfile builds a standalone Next.js image:
 docker run --rm -p 3000:3000 -v ledgerflow-data:/app/data ledgerflow
 ```
 
-For a single-instance development deployment, persist `/app/data`. Production now supports a shared Neon/PostgreSQL state adapter. Set `STORAGE_ADAPTER=postgres`, `DATABASE_URL`, `AUTH_SECRET`, `APP_AUTH_EMAIL`, and a strong `APP_AUTH_PASSWORD`. The application fails closed in production when durable storage or authentication is not configured. `ALLOW_EPHEMERAL_STORAGE=true` is available only for an explicitly disposable demo and should never be used for financial records.
+For a single-instance development deployment, persist `/app/data`. Production now supports a shared Neon/PostgreSQL state adapter over Neon's HTTPS SQL endpoint. Set `STORAGE_ADAPTER=postgres`, `DATABASE_URL`, `AUTH_SECRET`, `APP_AUTH_EMAIL`, and a strong `APP_AUTH_PASSWORD`. The application fails closed in production when durable storage or authentication is not configured. `ALLOW_EPHEMERAL_STORAGE=true` is available only for an explicitly disposable demo and should never be used for financial records.
 
 Before the first production request, export the production `DATABASE_URL` and run `npm run db:migrate` against the production database. The migration runner uses Neon's HTTPS transaction API, takes a transaction-scoped advisory lock before applying migration guards, verifies checksums, and commits the complete release atomically. This avoids requiring a WebSocket connection from restricted WSL or CI networks. The adapter also creates the legacy table defensively, but migrations should be applied explicitly as part of release automation.
 

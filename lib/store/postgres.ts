@@ -1,31 +1,30 @@
-import { neonConfig, Pool, type PoolClient } from "@neondatabase/serverless";
-import ws from "ws";
+import { neon } from "@neondatabase/serverless";
+import { Agent } from "undici";
 import { StorageError } from "@/lib/domain/errors";
 import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
 
 const stateId = "primary-workspace";
 const requiredMigrations = ["001", "002", "003", "004", "005"];
-let pool: Pool | undefined;
+const maxUpdateAttempts = 5;
 
-// Node runtimes do not consistently expose a WebSocket constructor. Neon
-// needs one for transaction/session support used by SELECT ... FOR UPDATE.
-neonConfig.webSocketConstructor ??= ws;
+// Neon Pool/Client uses WebSockets. The Vercel request path and restricted
+// WSL networks are more reliable over Neon's HTTPS SQL endpoint. Force IPv4
+// because some environments advertise unreachable Neon IPv6 routes first.
+const httpDispatcher = new Agent({ connect: { family: 4, port: 443 } });
 
-function getPool(): Pool {
+function getSql() {
   const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  if (!connectionString)
     throw new StorageError(
       "database_not_configured",
       "DATABASE_URL is required for PostgreSQL storage",
     );
-  }
-  pool ??= new Pool({ connectionString, max: 3, idleTimeoutMillis: 10_000 });
-  return pool;
+  return neon(connectionString, { fetchOptions: { dispatcher: httpDispatcher } });
 }
 
-async function ensureTable(client: PoolClient): Promise<void> {
-  await client.query(`
+async function ensureTable(): Promise<void> {
+  await getSql().query(`
     CREATE TABLE IF NOT EXISTS ledgerflow_state (
       id TEXT PRIMARY KEY,
       version INTEGER NOT NULL,
@@ -46,49 +45,51 @@ function parseRow(value: unknown): StorageState {
   }
 }
 
-async function readRow(client: PoolClient, lock = false): Promise<StorageState | undefined> {
-  const result = await client.query<{ state: unknown }>(
-    `SELECT state FROM ledgerflow_state WHERE id = $1${lock ? " FOR UPDATE" : ""}`,
-    [stateId],
+async function seedIfMissing(): Promise<void> {
+  const seed = createSeedState();
+  await getSql().query(
+    `INSERT INTO ledgerflow_state (id, version, state) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO NOTHING`,
+    [stateId, seed.version, JSON.stringify(seed)],
   );
-  return result.rows[0] ? parseRow(result.rows[0].state) : undefined;
+}
+
+type StateRow = { version: number; state: unknown };
+
+async function readRow(): Promise<StateRow | undefined> {
+  const rows = (await getSql().query("SELECT version, state FROM ledgerflow_state WHERE id = $1", [
+    stateId,
+  ])) as StateRow[];
+  return rows[0];
 }
 
 export async function getPostgresState(): Promise<StorageState> {
-  const client = await getPool().connect();
   try {
-    await ensureTable(client);
-    let state = await readRow(client);
-    if (!state) {
-      const seed = createSeedState();
-      await client.query(
-        `INSERT INTO ledgerflow_state (id, version, state) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO NOTHING`,
-        [stateId, seed.version, JSON.stringify(seed)],
-      );
-      state = await readRow(client);
+    await ensureTable();
+    let row = await readRow();
+    if (!row) {
+      await seedIfMissing();
+      row = await readRow();
     }
-    if (!state)
+    if (!row)
       throw new StorageError(
         "database_state_missing",
         "The workspace state could not be initialized",
       );
-    return state;
+    return parseRow(row.state);
   } catch (error) {
     if (error instanceof StorageError) throw error;
     throw new StorageError("database_unavailable", "The PostgreSQL storage service is unavailable");
-  } finally {
-    client.release();
   }
 }
 
 export async function checkPostgresReadiness(): Promise<void> {
-  const client = await getPool().connect();
   try {
-    const migrations = await client.query<{ version: string }>(
+    const sql = getSql();
+    const migrations = (await sql.query(
       "SELECT version FROM schema_migrations WHERE version = ANY($1::text[])",
       [requiredMigrations],
-    );
-    const applied = new Set(migrations.rows.map((row) => row.version));
+    )) as Array<{ version: string }>;
+    const applied = new Set(migrations.map((row) => row.version));
     const missing = requiredMigrations.filter((version) => !applied.has(version));
     if (missing.length)
       throw new StorageError(
@@ -96,18 +97,20 @@ export async function checkPostgresReadiness(): Promise<void> {
         `Required database migrations are pending: ${missing.join(", ")}`,
       );
 
-    const tables = await client.query<{ state_table: string | null; jobs_table: string | null }>(
+    const tables = (await sql.query(
       "SELECT to_regclass('public.ledgerflow_state') AS state_table, to_regclass('public.jobs') AS jobs_table",
-    );
-    const row = tables.rows[0];
+    )) as Array<{ state_table: string | null; jobs_table: string | null }>;
+    const row = tables[0];
     if (!row?.state_table || !row.jobs_table)
       throw new StorageError(
         "database_schema_incomplete",
         "Required durable tables are unavailable",
       );
 
-    const state = await client.query("SELECT 1 FROM ledgerflow_state WHERE id = $1", [stateId]);
-    if (!state.rowCount)
+    const state = (await sql.query("SELECT 1 FROM ledgerflow_state WHERE id = $1", [
+      stateId,
+    ])) as Array<{ "?column?": number }>;
+    if (!state.length)
       throw new StorageError(
         "legacy_state_missing",
         "The legacy workspace has not been backfilled",
@@ -115,46 +118,44 @@ export async function checkPostgresReadiness(): Promise<void> {
   } catch (error) {
     if (error instanceof StorageError) throw error;
     throw new StorageError("database_unavailable", "The PostgreSQL storage service is unavailable");
-  } finally {
-    client.release();
   }
 }
 
 export async function updatePostgresState(
   mutator: (state: StorageState) => void,
 ): Promise<StorageState> {
-  const client = await getPool().connect();
   try {
-    await client.query("BEGIN");
-    await ensureTable(client);
-    let current = await readRow(client, true);
-    if (!current) {
-      const seed = createSeedState();
-      await client.query(
-        `INSERT INTO ledgerflow_state (id, version, state) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO NOTHING`,
-        [stateId, seed.version, JSON.stringify(seed)],
-      );
-      current = await readRow(client, true);
+    await ensureTable();
+    for (let attempt = 0; attempt < maxUpdateAttempts; attempt += 1) {
+      let row = await readRow();
+      if (!row) {
+        await seedIfMissing();
+        row = await readRow();
+      }
+      if (!row)
+        throw new StorageError(
+          "database_state_missing",
+          "The workspace state could not be initialized",
+        );
+
+      const draft = structuredClone(parseRow(row.state));
+      mutator(draft);
+      const validated = validateStorageState(draft);
+      const updated = (await getSql().query(
+        `UPDATE ledgerflow_state
+         SET version = version + 1, state = $2::jsonb, updated_at = NOW()
+         WHERE id = $1 AND version = $3
+         RETURNING version`,
+        [stateId, JSON.stringify(validated), row.version],
+      )) as Array<{ version: number }>;
+      if (updated.length) return validated;
     }
-    if (!current)
-      throw new StorageError(
-        "database_state_missing",
-        "The workspace state could not be initialized",
-      );
-    const draft = structuredClone(current);
-    mutator(draft);
-    const validated = validateStorageState(draft);
-    await client.query(
-      `UPDATE ledgerflow_state SET version = version + 1, state = $2::jsonb, updated_at = NOW() WHERE id = $1`,
-      [stateId, JSON.stringify(validated)],
+    throw new StorageError(
+      "database_write_conflict",
+      "The workspace changed while it was being saved; please retry",
     );
-    await client.query("COMMIT");
-    return validated;
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
     if (error instanceof StorageError) throw error;
     throw new StorageError("database_write_failed", "The workspace could not be saved");
-  } finally {
-    client.release();
   }
 }
