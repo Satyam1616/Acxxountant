@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { neon } from "@neondatabase/serverless";
+import { Agent } from "undici";
 
 const migrationDirectory = path.join(process.cwd(), "db/migrations");
 
@@ -154,9 +155,12 @@ async function main() {
   if (!connectionString) throw new Error("DATABASE_URL is required");
 
   // Neon's tagged HTTP client works over HTTPS and is usable on networks that
-  // block the WebSocket endpoint used by Pool/Client.
-  const sql = neon(connectionString);
-  await sql.query(`
+  // block the WebSocket endpoint used by Pool/Client. Force IPv4 because some
+  // WSL/Windows DNS setups advertise unreachable Neon IPv6 routes first.
+  const dispatcher = new Agent({ connect: { family: 4, port: 443 } });
+  try {
+    const sql = neon(connectionString, { fetchOptions: { dispatcher } });
+    await sql.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY,
       checksum TEXT NOT NULL,
@@ -164,32 +168,35 @@ async function main() {
     )
   `);
 
-  const files = sortMigrationFiles(
-    (await readdir(migrationDirectory)).filter((file) => /^\d+_.*\.sql$/.test(file)),
-  );
-  const beforeRows = (await sql.query(
-    "SELECT version, checksum FROM schema_migrations ORDER BY version",
-  )) as Array<{ version: string; checksum: string }>;
-  const before = new Map(beforeRows.map((row) => [row.version, row.checksum]));
-  const queries = [sql.query("SELECT pg_advisory_xact_lock(7813921)")];
+    const files = sortMigrationFiles(
+      (await readdir(migrationDirectory)).filter((file) => /^\d+_.*\.sql$/.test(file)),
+    );
+    const beforeRows = (await sql.query(
+      "SELECT version, checksum FROM schema_migrations ORDER BY version",
+    )) as Array<{ version: string; checksum: string }>;
+    const before = new Map(beforeRows.map((row) => [row.version, row.checksum]));
+    const queries = [sql.query("SELECT pg_advisory_xact_lock(7813921)")];
 
-  for (const file of files) {
-    const version = String(migrationVersion(file)).padStart(3, "0");
-    const migrationSql = await readFile(path.join(migrationDirectory, file), "utf8");
-    const checksum = createHash("sha256").update(migrationSql).digest("hex");
-    queries.push(sql.query(migrationGuard(version, checksum, migrationSql)));
+    for (const file of files) {
+      const version = String(migrationVersion(file)).padStart(3, "0");
+      const migrationSql = await readFile(path.join(migrationDirectory, file), "utf8");
+      const checksum = createHash("sha256").update(migrationSql).digest("hex");
+      queries.push(sql.query(migrationGuard(version, checksum, migrationSql)));
+    }
+
+    await sql.transaction(queries);
+
+    const afterRows = (await sql.query(
+      "SELECT version, checksum FROM schema_migrations ORDER BY version",
+    )) as Array<{ version: string; checksum: string }>;
+    for (const file of files) {
+      const version = String(migrationVersion(file)).padStart(3, "0");
+      if (!before.has(version)) console.log(`Applied migration ${file}`);
+    }
+    console.log(`Database migrations ready (${afterRows.length} applied)`);
+  } finally {
+    await dispatcher.close();
   }
-
-  await sql.transaction(queries);
-
-  const afterRows = (await sql.query(
-    "SELECT version, checksum FROM schema_migrations ORDER BY version",
-  )) as Array<{ version: string; checksum: string }>;
-  for (const file of files) {
-    const version = String(migrationVersion(file)).padStart(3, "0");
-    if (!before.has(version)) console.log(`Applied migration ${file}`);
-  }
-  console.log(`Database migrations ready (${afterRows.length} applied)`);
 }
 
 function errorDetails(error: unknown): unknown {
