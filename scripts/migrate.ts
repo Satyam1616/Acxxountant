@@ -1,14 +1,9 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { neonConfig, Pool, type PoolClient } from "@neondatabase/serverless";
-import ws from "ws";
+import { neon } from "@neondatabase/serverless";
 
 const migrationDirectory = path.join(process.cwd(), "db/migrations");
-
-// Migrations use advisory locks and transaction-scoped state, so they must use
-// a real PostgreSQL session rather than the stateless Neon HTTP query path.
-neonConfig.webSocketConstructor ??= ws;
 
 function quoteSql(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -31,60 +26,170 @@ function sortMigrationFiles(files: string[]): string[] {
   return [...files].sort((left, right) => migrationVersion(left) - migrationVersion(right));
 }
 
+function dollarQuoted(value: string, preferredTag: string): string {
+  let tag = preferredTag;
+  while (value.includes(`$${tag}$`)) tag += "_x";
+  return `$${tag}$${value}$${tag}$`;
+}
+
+function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let start = 0;
+  let index = 0;
+  let quote: "single" | "double" | "line-comment" | "block-comment" | "dollar" | undefined;
+  let dollarTag = "";
+  while (index < sql.length) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (quote === "single") {
+      if (character === "'" && next === "'") index += 2;
+      else if (character === "'") {
+        quote = undefined;
+        index += 1;
+      } else index += 1;
+      continue;
+    }
+    if (quote === "double") {
+      if (character === '"' && next === '"') index += 2;
+      else if (character === '"') {
+        quote = undefined;
+        index += 1;
+      } else index += 1;
+      continue;
+    }
+    if (quote === "line-comment") {
+      if (character === "\n") quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (quote === "block-comment") {
+      if (character === "*" && next === "/") {
+        quote = undefined;
+        index += 2;
+      } else index += 1;
+      continue;
+    }
+    if (quote === "dollar") {
+      if (sql.startsWith(dollarTag, index)) {
+        index += dollarTag.length;
+        quote = undefined;
+      } else index += 1;
+      continue;
+    }
+    if (character === "'") {
+      quote = "single";
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      quote = "double";
+      index += 1;
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      quote = "line-comment";
+      index += 2;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      quote = "block-comment";
+      index += 2;
+      continue;
+    }
+    if (character === "$") {
+      const match = sql.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarTag = match[0];
+        quote = "dollar";
+        index += dollarTag.length;
+        continue;
+      }
+    }
+    if (character === ";") {
+      const statement = sql.slice(start, index).trim();
+      if (statement) statements.push(statement);
+      start = index + 1;
+    }
+    index += 1;
+  }
+  const finalStatement = sql.slice(start).trim();
+  if (finalStatement) statements.push(finalStatement);
+  return statements;
+}
+
+function migrationGuard(version: string, checksum: string, migrationSql: string): string {
+  const statements = splitSqlStatements(migrationSql);
+  if (!statements.length) throw new Error(`Migration ${version} is empty`);
+  const executions = statements
+    .map((statement, index) => {
+      const literal = dollarQuoted(
+        statement,
+        `ledgerflow_statement_${version}_${index}_${checksum.slice(0, 12)}`,
+      );
+      return `    EXECUTE ${literal};`;
+    })
+    .join("\n");
+  const body = `
+DECLARE
+  existing_checksum TEXT;
+BEGIN
+  SELECT checksum INTO existing_checksum
+    FROM schema_migrations
+    WHERE version = ${quoteSql(version)};
+  IF existing_checksum IS NOT NULL THEN
+    IF existing_checksum <> ${quoteSql(checksum)} THEN
+      RAISE EXCEPTION 'Migration ${version} changed after it was applied';
+    END IF;
+  ELSE
+${executions}
+    INSERT INTO schema_migrations (version, checksum)
+      VALUES (${quoteSql(version)}, ${quoteSql(checksum)});
+  END IF;
+END`;
+  return `DO ${dollarQuoted(body, `ledgerflow_guard_${version}_${checksum.slice(0, 12)}`)};`;
+}
+
 async function main() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is required");
-  const pool = new Pool({ connectionString, max: 1 });
-  let client: PoolClient | undefined;
-  let inTransaction = false;
-  try {
-    client = await pool.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version TEXT PRIMARY KEY,
-        checksum TEXT NOT NULL,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await client.query("BEGIN");
-    inTransaction = true;
-    await client.query("SELECT pg_advisory_xact_lock(7813921)");
 
-    const applied = new Map(
-      (
-        await client.query<{ version: string; checksum: string }>(
-          "SELECT version, checksum FROM schema_migrations ORDER BY version",
-        )
-      ).rows.map((row) => [row.version, row.checksum]),
-    );
-    const files = sortMigrationFiles(
-      (await readdir(migrationDirectory)).filter((file) => /^\d+_.*\.sql$/.test(file)),
-    );
-    for (const file of files) {
-      const version = String(migrationVersion(file)).padStart(3, "0");
-      const sql = await readFile(path.join(migrationDirectory, file), "utf8");
-      const checksum = createHash("sha256").update(sql).digest("hex");
-      const previous = applied.get(version);
-      if (previous) {
-        if (previous !== checksum)
-          throw new Error(`Migration ${version} changed after it was applied`);
-        continue;
-      }
-      await client.query(sql);
-      await client.query(
-        `INSERT INTO schema_migrations (version, checksum) VALUES (${quoteSql(version)}, ${quoteSql(checksum)})`,
-      );
-      console.log(`Applied migration ${file}`);
-    }
-    await client.query("COMMIT");
-    inTransaction = false;
-  } catch (error) {
-    if (client && inTransaction) await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client?.release();
-    await pool.end();
+  // Neon's tagged HTTP client works over HTTPS and is usable on networks that
+  // block the WebSocket endpoint used by Pool/Client.
+  const sql = neon(connectionString);
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      checksum TEXT NOT NULL,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  const files = sortMigrationFiles(
+    (await readdir(migrationDirectory)).filter((file) => /^\d+_.*\.sql$/.test(file)),
+  );
+  const beforeRows = (await sql.query(
+    "SELECT version, checksum FROM schema_migrations ORDER BY version",
+  )) as Array<{ version: string; checksum: string }>;
+  const before = new Map(beforeRows.map((row) => [row.version, row.checksum]));
+  const queries = [sql.query("SELECT pg_advisory_xact_lock(7813921)")];
+
+  for (const file of files) {
+    const version = String(migrationVersion(file)).padStart(3, "0");
+    const migrationSql = await readFile(path.join(migrationDirectory, file), "utf8");
+    const checksum = createHash("sha256").update(migrationSql).digest("hex");
+    queries.push(sql.query(migrationGuard(version, checksum, migrationSql)));
   }
+
+  await sql.transaction(queries);
+
+  const afterRows = (await sql.query(
+    "SELECT version, checksum FROM schema_migrations ORDER BY version",
+  )) as Array<{ version: string; checksum: string }>;
+  for (const file of files) {
+    const version = String(migrationVersion(file)).padStart(3, "0");
+    if (!before.has(version)) console.log(`Applied migration ${file}`);
+  }
+  console.log(`Database migrations ready (${afterRows.length} applied)`);
 }
 
 function errorDetails(error: unknown): unknown {
