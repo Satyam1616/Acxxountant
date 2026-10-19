@@ -2,7 +2,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 export type Role = "admin" | "accountant" | "viewer";
-export type Session = { email: string; role: Role; issuedAt: number; expiresAt: number };
+export type Session = {
+  email: string;
+  role: Role;
+  issuedAt: number;
+  expiresAt: number;
+};
 
 export class AuthError extends Error {
   readonly code: string;
@@ -37,27 +42,72 @@ function configuredSecret(): string {
   );
 }
 
-function configuredCredentials(): { email: string; password: string; role: Role } {
+type ConfiguredUser = { email: string; password: string; role: Role };
+
+const roleSchema = z.enum(["admin", "accountant", "viewer"]);
+
+function validateConfiguredUsers(users: ConfiguredUser[]): ConfiguredUser[] {
+  if (!users.length)
+    throw new AuthError("auth_not_configured", "At least one application user is required", 503);
+  for (const user of users) {
+    if (
+      !user.email ||
+      !user.password ||
+      (process.env.NODE_ENV === "production" && user.password.length < 12)
+    )
+      throw new AuthError(
+        "auth_not_configured",
+        "Every production user needs an email and a password of at least 12 characters",
+        503,
+      );
+  }
+  return users;
+}
+
+function configuredUsers(): ConfiguredUser[] {
+  const configuredList = process.env.APP_AUTH_USERS?.trim();
+  if (configuredList) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(configuredList);
+    } catch {
+      throw new AuthError("auth_not_configured", "APP_AUTH_USERS must be valid JSON", 503);
+    }
+    const result = z
+      .array(
+        z
+          .object({
+            email: z.string().trim().email().max(254),
+            password: z.string().min(1).max(512),
+            role: roleSchema,
+          })
+          .strict(),
+      )
+      .safeParse(parsed);
+    if (!result.success)
+      throw new AuthError(
+        "auth_not_configured",
+        "APP_AUTH_USERS contains an invalid user definition",
+        503,
+      );
+    return validateConfiguredUsers(
+      result.data.map((user) => ({ ...user, email: user.email.toLowerCase() })),
+    );
+  }
+
   const password =
     process.env.APP_AUTH_PASSWORD ?? (process.env.NODE_ENV !== "production" ? "demo" : "");
-  if (!password || (process.env.NODE_ENV === "production" && password.length < 12))
-    throw new AuthError(
-      "auth_not_configured",
-      "APP_AUTH_PASSWORD is required before production access is enabled",
-      503,
-    );
   const email = (process.env.APP_AUTH_EMAIL ?? "admin@ledgerflow.local").trim().toLowerCase();
+  const roleValue = process.env.APP_AUTH_ROLE ?? "admin";
   if (process.env.NODE_ENV === "production" && !process.env.APP_AUTH_EMAIL)
     throw new AuthError(
       "auth_not_configured",
       "APP_AUTH_EMAIL is required before production access is enabled",
       503,
     );
-  const roleValue = process.env.APP_AUTH_ROLE ?? "admin";
-  if (!email || !["admin", "accountant", "viewer"].includes(roleValue)) {
-    throw new AuthError("auth_not_configured", "APP_AUTH_EMAIL and APP_AUTH_ROLE are invalid", 503);
-  }
-  return { email, password, role: roleValue as Role };
+  const role = roleSchema.safeParse(roleValue);
+  if (!role.success) throw new AuthError("auth_not_configured", "APP_AUTH_ROLE is invalid", 503);
+  return validateConfiguredUsers([{ email, password, role: role.data }]);
 }
 
 function encode(value: string): string {
@@ -108,17 +158,18 @@ function cookieValue(request: Request): string | undefined {
 }
 
 export function authenticate(email: string, password: string): Session {
-  const credentials = configuredCredentials();
-  if (
-    email.trim().toLowerCase() !== credentials.email ||
-    !safeEqual(password, credentials.password)
-  ) {
+  const credentials = configuredUsers();
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = credentials.find(
+    (candidate) => candidate.email === normalizedEmail && safeEqual(password, candidate.password),
+  );
+  if (!user) {
     throw new AuthError("invalid_credentials", "Email or password is incorrect");
   }
   const issuedAt = Date.now();
   return {
-    email: credentials.email,
-    role: credentials.role,
+    email: user.email,
+    role: user.role,
     issuedAt,
     expiresAt: issuedAt + sessionLifetimeMs,
   };
@@ -164,7 +215,7 @@ export function requireSession(
   request: Request,
   allowedRoles: Role[] = ["admin", "accountant", "viewer"],
 ): Session {
-  configuredCredentials();
+  configuredUsers();
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
     const origin = request.headers.get("origin");
     if (origin && origin !== new URL(request.url).origin && origin !== process.env.APP_URL)
@@ -180,10 +231,13 @@ export function requireSession(
 export function authStatus(): { configured: boolean; developmentFallback: boolean } {
   try {
     configuredSecret();
-    configuredCredentials();
+    configuredUsers();
     return {
       configured: true,
-      developmentFallback: process.env.NODE_ENV !== "production" && !process.env.APP_AUTH_PASSWORD,
+      developmentFallback:
+        process.env.NODE_ENV !== "production" &&
+        !process.env.APP_AUTH_PASSWORD &&
+        !process.env.APP_AUTH_USERS,
     };
   } catch {
     return { configured: false, developmentFallback: false };

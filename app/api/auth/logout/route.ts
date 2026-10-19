@@ -9,5 +9,13 @@ export async function POST() {
     cookie.value,
     cookie.options as Parameters<typeof response.cookies.set>[2],
   );
+  response.cookies.set("ledgerflow_oauth_state", "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  response.headers.set("Cache-Control", "no-store");
   return response;
 }

@@ -202,6 +202,13 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
         <path d="m6 6 12 12M18 6 6 18" />
       </>
     ),
+    logout: (
+      <>
+        <path d="M10 17 15 12 10 7" />
+        <path d="M15 12H3" />
+        <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+      </>
+    ),
     more: (
       <>
         <circle cx="5" cy="12" r="1" fill="currentColor" />
@@ -447,7 +454,14 @@ export default function Workspace() {
     }
   };
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) setError("Sign out could not be confirmed, but this screen was closed.");
+    } catch {
+      setError(
+        "Network error while signing out. Please close this tab if you are on a shared device.",
+      );
+    }
     setSession(null);
     setDashboard(null);
     setTourStep(null);
@@ -464,13 +478,16 @@ export default function Workspace() {
   };
   const nextTourStep = () => {
     if (tourStep === null) return;
-    if (tourStep >= tourSteps.length - 1) {
+    let nextIndex = tourStep + 1;
+    while (!isAdmin && nextIndex < tourSteps.length && tourSteps[nextIndex].view === "settings")
+      nextIndex += 1;
+    if (nextIndex >= tourSteps.length) {
       skipTour();
       return;
     }
-    const next = tourSteps[tourStep + 1];
+    const next = tourSteps[nextIndex];
     setView(next.view);
-    setTourStep(tourStep + 1);
+    setTourStep(nextIndex);
   };
   const startTour = () => {
     tourInitialized.current = true;
@@ -480,6 +497,10 @@ export default function Workspace() {
   const activeTransaction = dashboard?.reviewQueue.find(
     (item) => item.transaction.id === selectedId,
   );
+  const role = session?.role;
+  const canMutate = role === "admin" || role === "accountant";
+  const isAdmin = role === "admin";
+  const visibleNavItems = navItems.filter((item) => item.id !== "settings" || isAdmin);
 
   if (session === undefined || (session && loading && !dashboard))
     return (
@@ -534,11 +555,12 @@ export default function Workspace() {
           <span className="switcher-chevron">⌄</span>
         </div>
         <nav className="main-nav" aria-label="Main navigation">
-          {navItems.map((item) => (
+          {visibleNavItems.map((item) => (
             <button
               key={item.id}
               className={`nav-item ${view === item.id ? "active" : ""} ${tourStep !== null && tourSteps[tourStep]?.view === item.id ? "tour-focus" : ""}`}
               onClick={() => setView(item.id)}
+              aria-current={view === item.id ? "page" : undefined}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
@@ -563,10 +585,15 @@ export default function Workspace() {
             <div className="user-avatar">{initials(session.email.split("@")[0])}</div>
             <div>
               <strong>{session.email}</strong>
-              <span>{session.role}</span>
+              <span className="role-badge">{session.role}</span>
             </div>
-            <button className="icon-button" aria-label="Sign out" onClick={() => void logout()}>
-              <Icon name="more" />
+            <button
+              className="icon-button"
+              aria-label="Sign out"
+              title="Sign out"
+              onClick={() => void logout()}
+            >
+              <Icon name="logout" />
             </button>
           </div>
         </div>
@@ -576,7 +603,7 @@ export default function Workspace() {
           <div className="breadcrumbs">
             <span>Northstar Finance</span>
             <Icon name="chevron" size={13} />
-            <strong>{navItems.find((item) => item.id === view)?.label}</strong>
+            <strong>{visibleNavItems.find((item) => item.id === view)?.label ?? "Overview"}</strong>
           </div>
           <div className="topbar-actions">
             <label className="search-box">
@@ -604,8 +631,18 @@ export default function Workspace() {
               <span>♧</span>
             </button>
             <div className="top-avatar">{initials(session.email.split("@")[0])}</div>
+            <button className="mobile-sign-out" onClick={() => void logout()}>
+              <Icon name="logout" size={16} />
+              <span>Sign out</span>
+            </button>
           </div>
         </header>
+        {!canMutate && (
+          <div className="role-banner" role="status">
+            <span className="role-banner-dot" /> You are viewing this workspace as a{" "}
+            <strong>{role}</strong>. Editing and posting controls are hidden.
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             <span>
@@ -621,8 +658,9 @@ export default function Workspace() {
             <Overview
               dashboard={dashboard}
               onNavigate={setView}
-              onCreate={() => setModal("invoice")}
-              onImport={() => setModal("import")}
+              onCreate={canMutate ? () => setModal("invoice") : undefined}
+              onImport={canMutate ? () => setModal("import") : undefined}
+              canMutate={canMutate}
             />
           )}
           {view === "reconcile" && (
@@ -633,14 +671,25 @@ export default function Workspace() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onAction={action}
-              onImport={() => setModal("import")}
+              onImport={canMutate ? () => setModal("import") : undefined}
+              canMutate={canMutate}
             />
           )}
           {view === "invoices" && (
-            <Invoices dashboard={dashboard} query={query} onCreate={() => setModal("invoice")} />
+            <Invoices
+              dashboard={dashboard}
+              query={query}
+              onCreate={canMutate ? () => setModal("invoice") : undefined}
+              canMutate={canMutate}
+            />
           )}
           {view === "customers" && (
-            <Customers dashboard={dashboard} query={query} onCreate={() => setModal("customer")} />
+            <Customers
+              dashboard={dashboard}
+              query={query}
+              onCreate={canMutate ? () => setModal("customer") : undefined}
+              canMutate={canMutate}
+            />
           )}
           {view === "ledger" && (
             <Ledger
@@ -659,7 +708,12 @@ export default function Workspace() {
             />
           )}
           {view === "settings" && (
-            <Settings dashboard={dashboard} onSaved={() => void reload()} onError={setError} />
+            <Settings
+              dashboard={dashboard}
+              onSaved={() => void reload()}
+              onError={setError}
+              canEdit={isAdmin}
+            />
           )}
         </div>
       </main>
@@ -670,6 +724,7 @@ export default function Workspace() {
           onClose={() => setSelectedId(null)}
           onAction={action}
           working={working}
+          canMutate={canMutate}
         />
       )}
       {modal === "invoice" && (
@@ -797,9 +852,7 @@ function LoginScreen({
                 autoComplete="current-password"
                 required
               />
-              <small>
-                Local development fallback: password <code>demo</code>.
-              </small>
+              <small>Use the credentials assigned to your workspace role.</small>
             </label>
             <button className="button primary full" disabled={working}>
               {working ? "Signing in…" : "Sign in"} <Icon name="arrow" size={15} />
@@ -819,11 +872,13 @@ function Overview({
   onNavigate,
   onCreate,
   onImport,
+  canMutate,
 }: {
   dashboard: Dashboard;
   onNavigate: (view: View) => void;
-  onCreate: () => void;
-  onImport: () => void;
+  onCreate?: () => void;
+  onImport?: () => void;
+  canMutate: boolean;
 }) {
   const maxAging = Math.max(...dashboard.aging.map((row) => Number(row.total.minor)), 1);
   const overdueCount = dashboard.invoices.filter((invoice) => invoice.status === "overdue").length;
@@ -851,14 +906,16 @@ function Overview({
           </h1>
           <p>Here’s what’s happening across {dashboard.entity.name} today.</p>
         </div>
-        <div className="heading-actions">
-          <button className="button secondary" onClick={onImport}>
-            <Icon name="upload" size={16} /> Import transactions
-          </button>
-          <button className="button primary" onClick={onCreate}>
-            <Icon name="plus" size={16} /> New invoice
-          </button>
-        </div>
+        {canMutate && (
+          <div className="heading-actions">
+            <button className="button secondary" onClick={onImport}>
+              <Icon name="upload" size={16} /> Import transactions
+            </button>
+            <button className="button primary" onClick={onCreate}>
+              <Icon name="plus" size={16} /> New invoice
+            </button>
+          </div>
+        )}
       </div>
       <div className="metric-grid">
         <MetricCard
@@ -951,7 +1008,7 @@ function Overview({
               <EmptyState
                 title="No outstanding receivables"
                 description="Create an invoice to start tracking collections."
-                action="New invoice"
+                action={canMutate ? "New invoice" : undefined}
                 onAction={onCreate}
               />
             )}
@@ -1131,8 +1188,8 @@ function EmptyState({
 }: {
   title: string;
   description: string;
-  action: string;
-  onAction: () => void;
+  action?: string;
+  onAction?: () => void;
 }) {
   return (
     <div className="empty-state">
@@ -1141,10 +1198,12 @@ function EmptyState({
       </div>
       <h3>{title}</h3>
       <p>{description}</p>
-      <button className="button secondary small" onClick={onAction}>
-        <Icon name="plus" size={14} />
-        {action}
-      </button>
+      {action && onAction && (
+        <button className="button secondary small" onClick={onAction}>
+          <Icon name="plus" size={14} />
+          {action}
+        </button>
+      )}
     </div>
   );
 }
@@ -1157,6 +1216,7 @@ function Reconcile({
   onSelect,
   onAction,
   onImport,
+  canMutate,
 }: {
   dashboard: Dashboard;
   query: string;
@@ -1164,7 +1224,8 @@ function Reconcile({
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
-  onImport: () => void;
+  onImport?: () => void;
+  canMutate: boolean;
 }) {
   const [tab, setTab] = useState<"review" | "posted" | "excluded">("review");
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -1195,29 +1256,32 @@ function Reconcile({
           <h1>Reconcile transactions</h1>
           <p>Turn bank activity into accurate, approved ledger entries.</p>
         </div>
-        <div className="heading-actions">
-          <button className="button secondary" onClick={onImport}>
-            <Icon name="upload" size={16} /> Import CSV
-          </button>
-          <button
-            className="button primary"
-            onClick={() =>
-              onAction("Auto-applied confident matches", async () => {
-                for (const item of dashboard.reviewQueue.filter(
-                  (entry) =>
-                    (entry.match?.confidence ?? 0) >= dashboard.entity.settings.autoApplyThreshold,
-                ))
-                  await requestJson(`/api/reconcile/${item.transaction.id}/approve`, {
-                    method: "POST",
-                    body: JSON.stringify({ mode: "suggestion" }),
-                  });
-              })
-            }
-            disabled={working !== null}
-          >
-            <Icon name="spark" size={16} /> Approve confident
-          </button>
-        </div>
+        {canMutate && (
+          <div className="heading-actions">
+            <button className="button secondary" onClick={onImport}>
+              <Icon name="upload" size={16} /> Import CSV
+            </button>
+            <button
+              className="button primary"
+              onClick={() =>
+                onAction("Auto-applied confident matches", async () => {
+                  for (const item of dashboard.reviewQueue.filter(
+                    (entry) =>
+                      (entry.match?.confidence ?? 0) >=
+                      dashboard.entity.settings.autoApplyThreshold,
+                  ))
+                    await requestJson(`/api/reconcile/${item.transaction.id}/approve`, {
+                      method: "POST",
+                      body: JSON.stringify({ mode: "suggestion" }),
+                    });
+                })
+              }
+              disabled={working !== null}
+            >
+              <Icon name="spark" size={16} /> Approve confident
+            </button>
+          </div>
+        )}
       </div>
       <div className="reconcile-summary">
         <div>
@@ -1315,6 +1379,7 @@ function Reconcile({
                     }
                     onSelect={onSelect}
                     onAction={onAction}
+                    canMutate={canMutate}
                   />
                 ))}
               </tbody>
@@ -1328,7 +1393,7 @@ function Reconcile({
                 ? "Import a statement or connect a bank feed to keep going."
                 : "Transactions will appear here as they are resolved."
             }
-            action="Import CSV"
+            action={canMutate ? "Import CSV" : undefined}
             onAction={onImport}
           />
         )}
@@ -1344,6 +1409,7 @@ function TransactionRow({
   onToggle,
   onSelect,
   onAction,
+  canMutate,
 }: {
   row: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
   selected: boolean;
@@ -1351,6 +1417,7 @@ function TransactionRow({
   onToggle: (checked: boolean) => void;
   onSelect: (id: string) => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
+  canMutate: boolean;
 }) {
   const transaction = row.transaction;
   const suggested = row.invoice
@@ -1413,32 +1480,34 @@ function TransactionRow({
         </span>
       </td>
       <td>
-        <button
-          className="row-action"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (transaction.status !== "posted" && (row.invoice || row.match?.suggestedAccountId))
-              void onAction("Transaction approved", () =>
-                requestJson(`/api/reconcile/${transaction.id}/approve`, {
-                  method: "POST",
-                  body: JSON.stringify({ mode: "suggestion" }),
-                }),
-              );
-            else if (transaction.status !== "posted") onSelect(transaction.id);
-          }}
-          aria-label="Approve transaction"
-        >
-          <Icon
-            name={
-              transaction.status === "posted"
-                ? "check"
-                : row.invoice || row.match?.suggestedAccountId
-                  ? "arrow"
-                  : "search"
-            }
-            size={16}
-          />
-        </button>
+        {canMutate && (
+          <button
+            className="row-action"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (transaction.status !== "posted" && (row.invoice || row.match?.suggestedAccountId))
+                void onAction("Transaction approved", () =>
+                  requestJson(`/api/reconcile/${transaction.id}/approve`, {
+                    method: "POST",
+                    body: JSON.stringify({ mode: "suggestion" }),
+                  }),
+                );
+              else if (transaction.status !== "posted") onSelect(transaction.id);
+            }}
+            aria-label="Approve transaction"
+          >
+            <Icon
+              name={
+                transaction.status === "posted"
+                  ? "check"
+                  : row.invoice || row.match?.suggestedAccountId
+                    ? "arrow"
+                    : "search"
+              }
+              size={16}
+            />
+          </button>
+        )}
       </td>
     </tr>
   );
@@ -1459,12 +1528,14 @@ function ReviewDrawer({
   onClose,
   onAction,
   working,
+  canMutate,
 }: {
   item: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
   accounts: Account[];
   onClose: () => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
   working: string | null;
+  canMutate: boolean;
 }) {
   const { transaction, match, invoice, customer } = item;
   const [accountId, setAccountId] = useState(
@@ -1540,7 +1611,7 @@ function ReviewDrawer({
             </div>
           )}
         </div>
-        {needsCategory && transaction.status !== "posted" && (
+        {canMutate && needsCategory && transaction.status !== "posted" && (
           <div className="drawer-section">
             <label className="drawer-label" htmlFor="posting-account">
               Post to account
@@ -1603,7 +1674,11 @@ function ReviewDrawer({
           </div>
         </div>
         <div className="drawer-footer">
-          {transaction.status === "posted" ? (
+          {!canMutate ? (
+            <div className="read-only-note">
+              <Icon name="book" size={15} /> Viewer access is read-only.
+            </div>
+          ) : transaction.status === "posted" ? (
             <button
               className="button secondary full"
               onClick={() =>
@@ -1659,10 +1734,12 @@ function Invoices({
   dashboard,
   query,
   onCreate,
+  canMutate,
 }: {
   dashboard: Dashboard;
   query: string;
-  onCreate: () => void;
+  onCreate?: () => void;
+  canMutate: boolean;
 }) {
   const [filter, setFilter] = useState("all");
   const invoices = dashboard.invoices.filter(
@@ -1701,9 +1778,11 @@ function Invoices({
           >
             <Icon name="download" size={16} /> Export
           </button>
-          <button className="button primary" onClick={onCreate}>
-            <Icon name="plus" size={16} /> New invoice
-          </button>
+          {canMutate && (
+            <button className="button primary" onClick={onCreate}>
+              <Icon name="plus" size={16} /> New invoice
+            </button>
+          )}
         </div>
       </div>
       <div className="mini-metric-row">
@@ -1815,7 +1894,7 @@ function Invoices({
           <EmptyState
             title="No invoices match"
             description="Try clearing your filters or create a new invoice."
-            action="New invoice"
+            action={canMutate ? "New invoice" : undefined}
             onAction={onCreate}
           />
         )}
@@ -1837,10 +1916,12 @@ function Customers({
   dashboard,
   query,
   onCreate,
+  canMutate,
 }: {
   dashboard: Dashboard;
   query: string;
-  onCreate: () => void;
+  onCreate?: () => void;
+  canMutate: boolean;
 }) {
   const visible = dashboard.customers.filter((customer) =>
     `${customer.name} ${customer.email} ${customer.company ?? ""}`
@@ -1855,9 +1936,11 @@ function Customers({
           <h1>Customers</h1>
           <p>See who owes you, what’s overdue, and what happened last.</p>
         </div>
-        <button className="button primary" onClick={onCreate}>
-          <Icon name="plus" size={16} /> Add customer
-        </button>
+        {canMutate && (
+          <button className="button primary" onClick={onCreate}>
+            <Icon name="plus" size={16} /> Add customer
+          </button>
+        )}
       </div>
       <div className="customer-grid">
         {visible.map((customer) => {
@@ -1902,7 +1985,7 @@ function Customers({
           <EmptyState
             title="No customers match"
             description="Try another search or add a new customer."
-            action="Add customer"
+            action={canMutate ? "Add customer" : undefined}
             onAction={onCreate}
           />
         </section>
@@ -1980,9 +2063,6 @@ function Ledger({
             }
           >
             <Icon name="download" size={16} /> Export CSV
-          </button>
-          <button className="button primary">
-            <Icon name="plus" size={16} /> New adjustment
           </button>
         </div>
       </div>
@@ -2292,10 +2372,12 @@ function Settings({
   dashboard,
   onSaved,
   onError,
+  canEdit,
 }: {
   dashboard: Dashboard;
   onSaved: () => void;
   onError: (message: string) => void;
+  canEdit: boolean;
 }) {
   const [threshold, setThreshold] = useState(
     String(Math.round(dashboard.entity.settings.autoApplyThreshold * 100)),
@@ -2340,9 +2422,11 @@ function Settings({
           <h1>Settings</h1>
           <p>Make LedgerFlow fit the way your team closes the books.</p>
         </div>
-        <button className="button primary" onClick={() => void save()} disabled={saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
+        {canEdit && (
+          <button className="button primary" onClick={() => void save()} disabled={saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        )}
       </div>
       <div className="settings-layout">
         <nav className="settings-nav">
@@ -2362,16 +2446,28 @@ function Settings({
             <div className="settings-form">
               <label>
                 Workspace name
-                <input value={name} onChange={(event) => setName(event.target.value)} />
+                <input
+                  disabled={!canEdit}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
               </label>
               <label>
                 Legal name
-                <input value={legalName} onChange={(event) => setLegalName(event.target.value)} />
+                <input
+                  disabled={!canEdit}
+                  value={legalName}
+                  onChange={(event) => setLegalName(event.target.value)}
+                />
               </label>
               <div className="form-row">
                 <label>
                   Base currency
-                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                  <select
+                    disabled={!canEdit}
+                    value={currency}
+                    onChange={(event) => setCurrency(event.target.value)}
+                  >
                     <option value="USD">USD — US Dollar</option>
                     <option value="EUR">EUR — Euro</option>
                     <option value="GBP">GBP — Pound Sterling</option>
@@ -2379,7 +2475,11 @@ function Settings({
                 </label>
                 <label>
                   Timezone
-                  <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
+                  <select
+                    disabled={!canEdit}
+                    value={timezone}
+                    onChange={(event) => setTimezone(event.target.value)}
+                  >
                     <option value="America/New_York">America/New_York</option>
                     <option value="America/Los_Angeles">America/Los_Angeles</option>
                     <option value="UTC">UTC</option>
@@ -2402,6 +2502,7 @@ function Settings({
                     min="70"
                     max="100"
                     value={threshold}
+                    disabled={!canEdit}
                     onChange={(event) => setThreshold(event.target.value)}
                   />
                   <output>{threshold}%</output>
@@ -2411,6 +2512,7 @@ function Settings({
                 Fee tolerance
                 <input
                   value={feeToleranceMinor}
+                  disabled={!canEdit}
                   onChange={(event) => setFeeToleranceMinor(event.target.value.replace(/\D/g, ""))}
                   inputMode="numeric"
                 />
@@ -2436,6 +2538,7 @@ function Settings({
                   key={value}
                   className={`provider-option ${provider === value ? "selected" : ""}`}
                   onClick={() => setProvider(value)}
+                  disabled={!canEdit}
                 >
                   <span className="provider-icon">{icon}</span>
                   <span>

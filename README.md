@@ -116,6 +116,10 @@ After the migrations succeed, run `npm run db:backfill` once to copy the legacy 
 
 Generate a strong application secret with `openssl rand -base64 32`, set it as `AUTH_SECRET`, and configure `APP_AUTH_PASSWORD` with at least 12 characters. In Vercel, add these values under **Project Settings → Environment Variables** for Production and redeploy. Do not commit `.env.local` or provider tokens.
 
+### Roles and login
+
+The API enforces three roles: `admin`, `accountant`, and `viewer`. Admins can change workspace settings and manage integrations; accountants can import, reconcile, issue invoices, and manage customers; viewers have read-only access. For a single-user deployment, set `APP_AUTH_EMAIL`, `APP_AUTH_PASSWORD`, and `APP_AUTH_ROLE`. For multiple deployment users, set `APP_AUTH_USERS` to a JSON array of `{ "email", "password", "role" }` objects; it takes precedence over the single-user variables. Passwords must be at least 12 characters in production. The UI hides controls that the current role cannot use, while the API remains the final authorization boundary. Logout clears the application and pending OAuth cookies.
+
 ### Integrations
 
 The server now includes credential-free provider ports plus real HTTP flows for Plaid Link/token exchange and QuickBooks/Xero OAuth. Configure the provider variables from `.env.example`, then use these server endpoints from an authenticated admin UI:
