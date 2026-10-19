@@ -62,6 +62,15 @@ describe("money", () => {
     expect(() => parseAmount("1.001", "USD")).toThrow("too_many_decimals");
     expect(parseAmount("100", "JPY").minor).toBe(100n);
   });
+
+  it("parses rupees and uses Indian lakh/crore grouping", () => {
+    const value = parseAmount("₹1,23,456.78", "INR");
+    expect(value.minor).toBe(12345678n);
+    expect(formatMoney(value)).toBe("₹1,23,456.78");
+    expect(formatMoney({ currency: "INR", minor: -12345678n })).toBe("-₹1,23,456.78");
+    expect(formatMoney({ currency: "INR", minor: 1234567890n })).toBe("₹1,23,45,678.90");
+    expect(() => parseAmount("1.001", "INR")).toThrow("too_many_decimals");
+  });
 });
 
 describe("matching", () => {
@@ -184,6 +193,12 @@ describe("ledger and import", () => {
     expect(parseBankCsv("Date,Amount\n2026-02-31,1.00", "USD").errors[0]?.message).toContain(
       "invalid_date",
     );
+    const rupees = parseBankCsv(
+      'Date,Amount,Description\n2026-10-05,"₹1,23,456.78",Indian customer payment',
+      "INR",
+    );
+    expect(rupees.errors).toHaveLength(0);
+    expect(rupees.rows[0].amount).toMatchObject({ currency: "INR", minor: 12345678n });
     const duplicates = parseBankCsv(
       "Date,Amount,Description\n2026-10-05,10.00,Same\n2026-10-05,10.00,Same",
       "USD",
@@ -319,6 +334,14 @@ describe("application workflow", () => {
     expect(report.balanceSheet.difference.minor).toBe(0n);
   });
 
+  it("uses INR and India defaults for a fresh workspace", async () => {
+    const dashboard = await getDashboard();
+    expect(dashboard.entity.currency).toBe("INR");
+    expect(dashboard.entity.timezone).toBe("Asia/Kolkata");
+    expect(dashboard.metrics.outstanding.currency).toBe("INR");
+    expect(dashboard.invoices.every((invoice) => invoice.currency === "INR")).toBe(true);
+  });
+
   it("posts an outgoing category with a balanced journal", async () => {
     await approveTransaction("bank_4", { mode: "category" });
     const state = await getState();
@@ -369,6 +392,7 @@ describe("application workflow", () => {
 
   it("rejects invalid settings before mutating state", async () => {
     await expect(saveSettings({ autoApplyThreshold: 4 })).rejects.toThrow();
+    await expect(saveSettings({ currency: "ZZZ" })).rejects.toThrow();
     const state = await getState();
     expect(state.entity.settings.autoApplyThreshold).toBe(0.9);
   });

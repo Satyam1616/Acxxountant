@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decryptSecret, encryptSecret } from "@/lib/integrations/crypto";
 import { createPkcePair, validateReturnPath } from "@/lib/integrations/oauth";
-import { QuickBooksClient, XeroClient } from "@/lib/integrations/providers";
+import { PlaidClient, QuickBooksClient, XeroClient } from "@/lib/integrations/providers";
 
 describe("integration security foundations", () => {
   afterEach(() => {
@@ -13,6 +13,8 @@ describe("integration security foundations", () => {
     delete process.env.XERO_CLIENT_ID;
     delete process.env.XERO_CLIENT_SECRET;
     delete process.env.XERO_REDIRECT_URI;
+    delete process.env.PLAID_CLIENT_ID;
+    delete process.env.PLAID_SECRET;
   });
 
   it("encrypts credentials with authenticated encryption", () => {
@@ -105,6 +107,49 @@ describe("integration security foundations", () => {
       status: "paid",
     });
     expect(String(fetchMock.mock.calls[0][0])).toContain("realm");
+  });
+
+  it("normalizes Plaid INR transactions using the provider currency", async () => {
+    process.env.PLAID_CLIENT_ID = "plaid-client";
+    process.env.PLAID_SECRET = "plaid-secret";
+    const fetchMock = vi.fn<(url: string | URL, init?: RequestInit) => Promise<Response>>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            added: [
+              {
+                account_id: "plaid-account",
+                transaction_id: "plaid-tx",
+                date: "2026-01-04",
+                amount: -1234.56,
+                iso_currency_code: "INR",
+                name: "Indian customer payment",
+                pending: false,
+              },
+            ],
+            modified: [],
+            removed: [],
+            next_cursor: "cursor-2",
+            has_more: false,
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new PlaidClient().syncTransactions({
+      credential: {
+        connectionId: "connection",
+        credentialRef: "plaid",
+        accessToken: "token" as never,
+        scopes: [],
+      },
+      requestId: "request",
+      cursor: null,
+    });
+    expect(result.added[0]).toMatchObject({
+      amount: { currency: "INR", minor: "123456" },
+      direction: "inflow",
+    });
   });
 
   it("normalizes Xero payment pages and sends the tenant header", async () => {

@@ -1,4 +1,14 @@
-export type CurrencyCode = "USD" | "EUR" | "GBP" | "CAD" | "JPY" | string;
+export type CurrencyCode =
+  | "INR"
+  | "USD"
+  | "EUR"
+  | "GBP"
+  | "CAD"
+  | "JPY"
+  | "KRW"
+  | "BHD"
+  | "KWD"
+  | string;
 
 export type Money = {
   currency: CurrencyCode;

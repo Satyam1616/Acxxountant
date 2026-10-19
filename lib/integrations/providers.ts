@@ -90,6 +90,7 @@ function tokenSet(
 }
 
 const currencyScales: Record<CurrencyCode, number> = {
+  INR: 2,
   USD: 2,
   EUR: 2,
   GBP: 2,
@@ -101,7 +102,7 @@ const currencyScales: Record<CurrencyCode, number> = {
 };
 
 function currencyCode(value: string | undefined): CurrencyCode {
-  return value && value in currencyScales ? (value as CurrencyCode) : "USD";
+  return value && Object.hasOwn(currencyScales, value) ? (value as CurrencyCode) : "USD";
 }
 
 function minorUnits(value: string | number | undefined, currency: CurrencyCode): string {
@@ -223,6 +224,7 @@ export class PlaidClient implements BankFeedProviderPort {
         pending_transaction_id?: string;
         date: string;
         amount: number;
+        iso_currency_code?: string;
         name: string;
         merchant_name?: string;
         pending: boolean;
@@ -232,6 +234,7 @@ export class PlaidClient implements BankFeedProviderPort {
         transaction_id: string;
         date: string;
         amount: number;
+        iso_currency_code?: string;
         name: string;
         pending: boolean;
       }>;
@@ -258,6 +261,7 @@ export class PlaidClient implements BankFeedProviderPort {
       pending_transaction_id?: string;
       date: string;
       amount: number;
+      iso_currency_code?: string;
       name: string;
       merchant_name?: string;
       pending: boolean;
@@ -267,7 +271,13 @@ export class PlaidClient implements BankFeedProviderPort {
       pendingProviderTransactionId: transaction.pending_transaction_id,
       lifecycle: transaction.pending ? ("pending" as const) : ("posted" as const),
       date: transaction.date,
-      amount: { currency: "USD", minor: String(Math.round(Math.abs(transaction.amount) * 100)) },
+      amount: {
+        currency: currencyCode(transaction.iso_currency_code),
+        minor: minorUnits(
+          Math.abs(transaction.amount),
+          currencyCode(transaction.iso_currency_code),
+        ),
+      },
       direction: transaction.amount < 0 ? ("inflow" as const) : ("outflow" as const),
       description: transaction.merchant_name ?? transaction.name,
       counterparty: transaction.merchant_name,

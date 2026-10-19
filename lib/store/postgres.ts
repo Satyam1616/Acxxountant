@@ -5,7 +5,7 @@ import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
 
 const stateId = "primary-workspace";
-const requiredMigrations = ["001", "002", "003", "004", "005"];
+const requiredMigrations = ["001", "002", "003", "004", "005", "006"];
 const maxUpdateAttempts = 5;
 
 // Neon Pool/Client uses WebSockets. The HTTPS SQL endpoint is reliable in

@@ -35,6 +35,12 @@ Open [http://localhost:3000](http://localhost:3000). The first request creates a
 
 In development, sign in with `admin@ledgerflow.local` and password `demo` when no auth variables are configured. Never use those fallback credentials in a deployed environment.
 
+### India localization
+
+Fresh local workspaces use Indian defaults: INR as the base currency and `Asia/Kolkata` as the workspace timezone. INR is stored as integer paise, displays with the `₹` symbol and Indian lakh/crore grouping (for example, `₹1,23,456.78`), and accepts comma-grouped rupee values during CSV import. The currency selector continues to support USD, EUR, GBP, CAD, JPY, KRW, BHD, and KWD.
+
+Existing workspaces are not silently converted from USD or another currency. Change a base currency only before financial activity exists, or add an explicit conversion workflow first. GST, GSTIN/PAN, HSN/SAC, and statutory Indian tax reports are intentionally outside this localization step.
+
 ## Checks
 
 Run the same checks used by CI/build environments:

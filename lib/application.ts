@@ -11,6 +11,7 @@ import { invariant } from "@/lib/domain/errors";
 import { isValidBusinessDate, isValidTimeZone, todayInTimeZone } from "@/lib/domain/date";
 import { parseBankCsv } from "@/lib/domain/import";
 import { proposeMatch } from "@/lib/domain/matching";
+import { isSupportedCurrency } from "@/lib/domain/currency";
 import {
   agingReport,
   appliedByInvoice,
@@ -597,10 +598,7 @@ export const settingsInputSchema = z
   .object({
     name: z.string().trim().min(2).max(120).optional(),
     legalName: z.string().trim().min(2).max(200).optional(),
-    currency: z
-      .string()
-      .regex(/^[A-Z]{3}$/)
-      .optional(),
+    currency: z.string().refine(isSupportedCurrency, "Unsupported currency").optional(),
     timezone: z.string().refine(isValidTimeZone, "Invalid timezone").optional(),
     autoApplyThreshold: z.number().finite().min(0).max(1).optional(),
     feeToleranceMinor: z.string().regex(/^\d+$/).optional(),

@@ -1,7 +1,8 @@
 import type { StorageState } from "./schema";
 
 const createdAt = "2026-10-18T09:00:00.000Z";
-const usd = (minor: number) => ({ currency: "USD", minor: String(minor) });
+const baseCurrency = "INR" as const;
+const baseMoney = (minor: number) => ({ currency: baseCurrency, minor: String(minor) });
 
 export function createSeedState(): StorageState {
   const accounts = [
@@ -11,7 +12,7 @@ export function createSeedState(): StorageState {
       name: "Operating Bank",
       type: "asset" as const,
       control: "bank" as const,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -20,7 +21,7 @@ export function createSeedState(): StorageState {
       name: "Accounts Receivable",
       type: "asset" as const,
       control: "receivable" as const,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -29,7 +30,7 @@ export function createSeedState(): StorageState {
       name: "Unapplied Customer Cash",
       type: "liability" as const,
       control: "unapplied" as const,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -38,7 +39,7 @@ export function createSeedState(): StorageState {
       name: "Owner Equity",
       type: "equity" as const,
       control: null,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -47,7 +48,7 @@ export function createSeedState(): StorageState {
       name: "Consulting Revenue",
       type: "income" as const,
       control: null,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -56,7 +57,7 @@ export function createSeedState(): StorageState {
       name: "Software & Cloud",
       type: "expense" as const,
       control: null,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -65,7 +66,7 @@ export function createSeedState(): StorageState {
       name: "Payroll Expense",
       type: "expense" as const,
       control: null,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
     {
@@ -74,7 +75,7 @@ export function createSeedState(): StorageState {
       name: "Bank Fees",
       type: "expense" as const,
       control: null,
-      currency: "USD",
+      currency: baseCurrency,
       active: true,
     },
   ];
@@ -85,7 +86,7 @@ export function createSeedState(): StorageState {
       name: "Acme Industries",
       email: "finance@acme.example",
       company: "Acme Industries",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
     {
@@ -94,7 +95,7 @@ export function createSeedState(): StorageState {
       name: "Brightside Health",
       email: "ap@brightside.example",
       company: "Brightside Health",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
     {
@@ -103,7 +104,7 @@ export function createSeedState(): StorageState {
       name: "Northstar Labs",
       email: "billing@northstar.example",
       company: "Northstar Labs",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
     {
@@ -112,7 +113,7 @@ export function createSeedState(): StorageState {
       name: "Lumen Creative",
       email: "ops@lumen.example",
       company: "Lumen Creative",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
     {
@@ -121,7 +122,7 @@ export function createSeedState(): StorageState {
       name: "Orbit Systems",
       email: "finance@orbit.example",
       company: "Orbit Systems",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
     {
@@ -130,7 +131,7 @@ export function createSeedState(): StorageState {
       name: "Juniper & Co.",
       email: "hello@juniper.example",
       company: "Juniper & Co.",
-      currency: "USD",
+      currency: baseCurrency,
       createdAt,
     },
   ];
@@ -150,10 +151,10 @@ export function createSeedState(): StorageState {
       number,
       issueDate,
       dueDate,
-      currency: "USD",
+      currency: baseCurrency,
       status: status as "issued" | "paid",
       createdAt,
-      total: usd(total),
+      total: baseMoney(total),
       lines: [
         {
           id: `${id}_line`,
@@ -197,7 +198,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-ACME-1042",
       date: "2026-10-14",
-      amount: usd(12500),
+      amount: baseMoney(12500),
       flow: "inflow" as const,
       description: "Payment from Acme Industries",
       reference: "INV-1042",
@@ -212,7 +213,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-BRIGHTSIDE-1043",
       date: "2026-10-16",
-      amount: usd(4800),
+      amount: baseMoney(4800),
       flow: "inflow" as const,
       description: "Brightside Health ACH",
       reference: "INV-1043",
@@ -226,7 +227,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-NORTHSTAR-MULTI",
       date: "2026-10-17",
-      amount: usd(11450),
+      amount: baseMoney(11450),
       flow: "inflow" as const,
       description: "Northstar Labs remittance",
       reference: "INV-1044 / INV-1047",
@@ -240,7 +241,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "AWS-202610",
       date: "2026-10-11",
-      amount: usd(1450),
+      amount: baseMoney(1450),
       flow: "outflow" as const,
       description: "AWS cloud hosting",
       reference: "AWS-OCT-2026",
@@ -254,7 +255,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-UNKNOWN-01",
       date: "2026-10-12",
-      amount: usd(6400),
+      amount: baseMoney(6400),
       flow: "inflow" as const,
       description: "Incoming wire transfer",
       reference: "WIRE-UNKNOWN-01",
@@ -267,7 +268,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "GUSTO-202610",
       date: "2026-10-15",
-      amount: usd(875),
+      amount: baseMoney(875),
       flow: "outflow" as const,
       description: "Gusto payroll processing",
       reference: "GUSTO-OCT",
@@ -285,7 +286,7 @@ export function createSeedState(): StorageState {
       status: "approved" as const,
       confidence: 0.99,
       rationale: ["Invoice number found in bank reference", "Amount matches exactly"],
-      allocations: [{ invoiceId: "inv_1042", amount: usd(12500) }],
+      allocations: [{ invoiceId: "inv_1042", amount: baseMoney(12500) }],
       createdAt,
       resolvedAt: createdAt,
     },
@@ -296,7 +297,7 @@ export function createSeedState(): StorageState {
       status: "proposed" as const,
       confidence: 0.99,
       rationale: ["Invoice number found in bank reference", "Amount matches exactly"],
-      allocations: [{ invoiceId: "inv_1043", amount: usd(4800) }],
+      allocations: [{ invoiceId: "inv_1043", amount: baseMoney(4800) }],
       createdAt,
     },
     {
@@ -307,8 +308,8 @@ export function createSeedState(): StorageState {
       confidence: 0.84,
       rationale: ["Payment exactly covers 2 invoices"],
       allocations: [
-        { invoiceId: "inv_1044", amount: usd(8200) },
-        { invoiceId: "inv_1047", amount: usd(3250) },
+        { invoiceId: "inv_1044", amount: baseMoney(8200) },
+        { invoiceId: "inv_1047", amount: baseMoney(3250) },
       ],
       createdAt,
     },
@@ -348,14 +349,14 @@ export function createSeedState(): StorageState {
         id: "bank_1:bank",
         accountId: "acct_bank",
         side: "debit" as const,
-        amount: usd(12500),
+        amount: baseMoney(12500),
         memo: "Payment from Acme Industries",
       },
       {
         id: "bank_1:invoice:inv_1042",
         accountId: "acct_ar",
         side: "credit" as const,
-        amount: usd(12500),
+        amount: baseMoney(12500),
         memo: "Apply to invoice inv_1042",
       },
     ],
@@ -367,13 +368,13 @@ export function createSeedState(): StorageState {
       id: "entity_demo",
       organizationId: "org_demo",
       name: "Northstar Finance",
-      legalName: "Northstar Finance LLC",
-      currency: "USD",
-      timezone: "America/New_York",
+      legalName: "Northstar Finance Private Limited",
+      currency: baseCurrency,
+      timezone: "Asia/Kolkata",
       settings: {
         autoApplyThreshold: 0.9,
         feeToleranceMinor: "100",
-        defaultCurrency: "USD",
+        defaultCurrency: baseCurrency,
         aiProvider: "rules",
       },
     },

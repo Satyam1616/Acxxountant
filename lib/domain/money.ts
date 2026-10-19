@@ -1,15 +1,9 @@
 import { DomainError, invariant } from "./errors";
+import { currencyMeta, groupInteger } from "./currency";
 import type { CurrencyCode, Money, MoneyWire } from "./types";
 
-const MINOR_DIGITS: Record<string, number> = {
-  JPY: 0,
-  KRW: 0,
-  BHD: 3,
-  KWD: 3,
-};
-
 export function minorDigits(currency: CurrencyCode): number {
-  return MINOR_DIGITS[currency] ?? 2;
+  return currencyMeta(currency).minorDigits;
 }
 
 export function money(currency: CurrencyCode, minor: bigint | number | string): Money {
@@ -57,7 +51,11 @@ export function isPositive(a: Money): boolean {
 }
 
 export function parseAmount(value: string | number, currency: CurrencyCode): Money {
-  const raw = String(value).trim().replace(/,/g, "").replace(/^[+$]/, "");
+  const raw = String(value)
+    .trim()
+    .replace(/,/g, "")
+    .replace(/^[+₹$€£]/, "")
+    .trim();
   if (!raw || /e/i.test(raw) || !/^-?\d+(?:\.\d+)?$/.test(raw)) {
     throw new DomainError("invalid_amount", `Invalid ${currency} amount: ${value}`);
   }
@@ -83,7 +81,9 @@ export function formatMoney(value: Money, options?: { sign?: boolean }): string 
   const whole = absolute / scale;
   const fraction = digits ? `.${(absolute % scale).toString().padStart(digits, "0")}` : "";
   const sign = negative ? "-" : options?.sign ? "+" : "";
-  return `${sign}${value.currency} ${whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${fraction}`;
+  const grouped = groupInteger(whole.toString(), value.currency);
+  const prefix = value.currency === "INR" ? "₹" : value.currency;
+  return `${sign}${prefix}${value.currency === "INR" ? "" : " "}${grouped}${fraction}`;
 }
 
 export function toWire(value: Money): MoneyWire {

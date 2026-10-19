@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import LandingScreen from "@/components/LandingScreen";
 import ProductTour, { tourSteps } from "@/components/ProductTour";
+import { currencyMeta, groupInteger } from "@/lib/domain/currency";
 
 type View = "overview" | "reconcile" | "invoices" | "customers" | "ledger" | "reports" | "settings";
 type MoneyWire = { currency: string; minor: string };
@@ -249,29 +250,38 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 
 function formatMoney(value?: MoneyWire, compact = false) {
   if (!value) return "—";
-  const digits = value.currency === "JPY" ? 0 : 2;
+  const digits = currencyMeta(value.currency).minorDigits;
   const minor = BigInt(value.minor);
   const negative = minor < 0n;
   const absolute = (negative ? -minor : minor).toString().padStart(digits + 1, "0");
-  const whole = absolute.slice(0, -digits || undefined).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const rawWhole = absolute.slice(0, -digits || undefined);
+  const whole = groupInteger(rawWhole, value.currency);
   const fraction = digits ? `.${absolute.slice(-digits)}` : "";
-  const formatted = `${negative ? "-" : ""}${value.currency} ${whole}${fraction}`;
-  return compact && whole.length > 7
-    ? `${negative ? "-" : ""}${value.currency} ${whole.slice(0, -6)}M`
+  const symbol = value.currency === "INR" ? "₹" : value.currency;
+  const formatted = `${negative ? "-" : ""}${symbol}${value.currency === "INR" ? "" : " "}${whole}${fraction}`;
+  return compact && value.currency !== "INR" && rawWhole.length > 7
+    ? `${negative ? "-" : ""}${symbol}${value.currency === "INR" ? "" : " "}${whole.slice(0, -6)}M`
     : formatted;
 }
 
-function dateLabel(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
+function dateLocale(timezone: string) {
+  return timezone === "Asia/Kolkata" ? "en-IN" : "en-US";
+}
+
+function dateLabel(value: string, timezone = "Asia/Kolkata") {
+  return new Intl.DateTimeFormat(dateLocale(timezone), {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(`${value}T12:00:00`));
+    timeZone: timezone,
+  }).format(new Date(`${value}T12:00:00Z`));
 }
-function shortDate(value: string) {
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(
-    new Date(`${value}T12:00:00`),
-  );
+function shortDate(value: string, timezone = "Asia/Kolkata") {
+  return new Intl.DateTimeFormat(dateLocale(timezone), {
+    month: "short",
+    day: "numeric",
+    timeZone: timezone,
+  }).format(new Date(`${value}T12:00:00Z`));
 }
 function statusLabel(status: string) {
   return status === "partial" ? "Partially paid" : status.charAt(0).toUpperCase() + status.slice(1);
@@ -694,6 +704,8 @@ export default function Workspace() {
           {view === "ledger" && (
             <Ledger
               entries={ledger}
+              currency={dashboard.entity.currency}
+              timezone={dashboard.entity.timezone}
               loading={ledgerLoading}
               error={ledgerError}
               onRetry={() => void loadLedger()}
@@ -702,6 +714,8 @@ export default function Workspace() {
           {view === "reports" && (
             <ReportsView
               reports={reports}
+              currency={dashboard.entity.currency}
+              timezone={dashboard.entity.timezone}
               loading={reportsLoading}
               error={reportsError}
               onRetry={() => void loadReports()}
@@ -721,6 +735,7 @@ export default function Workspace() {
         <ReviewDrawer
           item={activeTransaction}
           accounts={dashboard.accounts}
+          timezone={dashboard.entity.timezone}
           onClose={() => setSelectedId(null)}
           onAction={action}
           working={working}
@@ -888,12 +903,13 @@ function Overview({
   const highConfidenceCount = dashboard.reviewQueue.filter(
     (item) => (item.match?.confidence ?? 0) >= dashboard.entity.settings.autoApplyThreshold,
   ).length;
-  const reportingDate = new Intl.DateTimeFormat("en-US", {
+  const reportingDate = new Intl.DateTimeFormat(dateLocale(dashboard.entity.timezone), {
     weekday: "long",
     month: "long",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(`${dashboard.reportingDate}T12:00:00`));
+    timeZone: dashboard.entity.timezone,
+  }).format(new Date(`${dashboard.reportingDate}T12:00:00Z`));
   return (
     <>
       <div className="page-heading hero-heading">
@@ -963,7 +979,7 @@ function Overview({
             <div className="aging-total">
               <span>Total outstanding</span>
               <strong>{formatMoney(dashboard.metrics.outstanding)}</strong>
-              <small>as of {dateLabel(dashboard.reportingDate)}</small>
+              <small>as of {dateLabel(dashboard.reportingDate, dashboard.entity.timezone)}</small>
             </div>
             <div className="aging-legend">
               <span>
@@ -1085,7 +1101,7 @@ function Overview({
                   <strong>{transaction.description}</strong>
                   <span>
                     {transaction.status === "posted" ? "Posted to ledger" : "Awaiting review"} ·{" "}
-                    {shortDate(transaction.date)}
+                    {shortDate(transaction.date, dashboard.entity.timezone)}
                   </span>
                 </div>
                 <b className={transaction.flow === "inflow" ? "positive" : "negative"}>
@@ -1367,6 +1383,7 @@ function Reconcile({
                   <TransactionRow
                     key={row.transaction.id}
                     row={row}
+                    timezone={dashboard.entity.timezone}
                     selected={selectedId === row.transaction.id}
                     checked={selectedRows.has(row.transaction.id)}
                     onToggle={(checked) =>
@@ -1404,6 +1421,7 @@ function Reconcile({
 
 function TransactionRow({
   row,
+  timezone,
   selected,
   checked,
   onToggle,
@@ -1412,6 +1430,7 @@ function TransactionRow({
   canMutate,
 }: {
   row: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
+  timezone: string;
   selected: boolean;
   checked: boolean;
   onToggle: (checked: boolean) => void;
@@ -1447,7 +1466,7 @@ function TransactionRow({
           onClick={(event) => event.stopPropagation()}
         />
       </td>
-      <td className="muted-cell">{shortDate(transaction.date)}</td>
+      <td className="muted-cell">{shortDate(transaction.date, timezone)}</td>
       <td>
         <div className="table-party">
           <span className={`mini-party ${transaction.flow}`}>
@@ -1525,6 +1544,7 @@ function Confidence({ value }: { value: number }) {
 function ReviewDrawer({
   item,
   accounts,
+  timezone,
   onClose,
   onAction,
   working,
@@ -1532,6 +1552,7 @@ function ReviewDrawer({
 }: {
   item: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
   accounts: Account[];
+  timezone: string;
   onClose: () => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
   working: string | null;
@@ -1560,7 +1581,7 @@ function ReviewDrawer({
               {transaction.counterparty || transaction.description}
             </h2>
             <span className="drawer-reference">
-              {transaction.reference || "No reference"} · {dateLabel(transaction.date)}
+              {transaction.reference || "No reference"} · {dateLabel(transaction.date, timezone)}
             </span>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
@@ -1793,7 +1814,7 @@ function Invoices({
               .reduce((sum, invoice) => sum + BigInt(invoice.total.minor), 0n)
               .toString()
               ? {
-                  currency: "USD",
+                  currency: dashboard.entity.currency,
                   minor: dashboard.invoices
                     .reduce((sum, invoice) => sum + BigInt(invoice.total.minor), 0n)
                     .toString(),
@@ -1867,9 +1888,11 @@ function Invoices({
                           </div>
                         </div>
                       </td>
-                      <td className="muted-cell">{dateLabel(invoice.issueDate)}</td>
+                      <td className="muted-cell">
+                        {dateLabel(invoice.issueDate, dashboard.entity.timezone)}
+                      </td>
                       <td className={invoice.status === "overdue" ? "danger-cell" : "muted-cell"}>
-                        {dateLabel(invoice.dueDate)}
+                        {dateLabel(invoice.dueDate, dashboard.entity.timezone)}
                       </td>
                       <td>
                         <strong>{formatMoney(invoice.total)}</strong>
@@ -1963,7 +1986,12 @@ function Customers({
               <div className="customer-stat">
                 <div>
                   <span>Outstanding</span>
-                  <strong>{formatMoney({ currency: "USD", minor: outstanding.toString() })}</strong>
+                  <strong>
+                    {formatMoney({
+                      currency: dashboard.entity.currency,
+                      minor: outstanding.toString(),
+                    })}
+                  </strong>
                 </div>
                 <div>
                   <span>Open invoices</span>
@@ -1971,7 +1999,10 @@ function Customers({
                 </div>
               </div>
               <div className="customer-card-foot">
-                <span>Last activity {invoices[0] ? shortDate(invoices[0].issueDate) : "—"}</span>
+                <span>
+                  Last activity{" "}
+                  {invoices[0] ? shortDate(invoices[0].issueDate, dashboard.entity.timezone) : "—"}
+                </span>
                 <button>
                   View profile <Icon name="arrow" size={13} />
                 </button>
@@ -1996,11 +2027,15 @@ function Customers({
 
 function Ledger({
   entries,
+  currency,
+  timezone,
   loading,
   error,
   onRetry,
 }: {
   entries: LedgerEntry[];
+  currency: string;
+  timezone: string;
   loading: boolean;
   error: string;
   onRetry: () => void;
@@ -2084,7 +2119,9 @@ function Ledger({
         <div className="table-toolbar">
           <div>
             <h2 className="toolbar-title">Journal entries</h2>
-            <span className="toolbar-subtitle">{entries.length} entries · USD · All time</span>
+            <span className="toolbar-subtitle">
+              {entries.length} entries · {currency} · All time
+            </span>
           </div>
           <div className="toolbar-right">
             <button className="filter-button">
@@ -2097,7 +2134,7 @@ function Ledger({
             {entries.map((entry) => (
               <div className="ledger-entry" key={entry.id}>
                 <div className="ledger-date">
-                  <strong>{shortDate(entry.date)}</strong>
+                  <strong>{shortDate(entry.date, timezone)}</strong>
                   <span>{entry.source.replace("bank-reconciliation", "reconciliation")}</span>
                 </div>
                 <div className="ledger-description">
@@ -2137,11 +2174,15 @@ function Ledger({
 
 function ReportsView({
   reports,
+  currency,
+  timezone,
   loading,
   error,
   onRetry,
 }: {
   reports: Reports | null;
+  currency: string;
+  timezone: string;
   loading: boolean;
   error: string;
   onRetry: () => void;
@@ -2221,7 +2262,7 @@ function ReportsView({
             {formatMoney(
               reports.aging.reduce((sum, row) => sum + BigInt(row.total.minor), 0n).toString()
                 ? {
-                    currency: "USD",
+                    currency,
                     minor: reports.aging
                       .reduce((sum, row) => sum + BigInt(row.total.minor), 0n)
                       .toString(),
@@ -2252,7 +2293,7 @@ function ReportsView({
               <Icon name="close" size={18} /> Out of balance
             </strong>
           )}
-          <small>As of {dateLabel(reports.asOf)}</small>
+          <small>As of {dateLabel(reports.asOf, timezone)}</small>
         </div>
       </div>
       <section className="card table-card">
@@ -2468,9 +2509,15 @@ function Settings({
                     value={currency}
                     onChange={(event) => setCurrency(event.target.value)}
                   >
+                    <option value="INR">INR — Indian Rupee</option>
                     <option value="USD">USD — US Dollar</option>
                     <option value="EUR">EUR — Euro</option>
                     <option value="GBP">GBP — Pound Sterling</option>
+                    <option value="CAD">CAD — Canadian Dollar</option>
+                    <option value="JPY">JPY — Japanese Yen</option>
+                    <option value="KRW">KRW — South Korean Won</option>
+                    <option value="BHD">BHD — Bahraini Dinar</option>
+                    <option value="KWD">KWD — Kuwaiti Dinar</option>
                   </select>
                 </label>
                 <label>
@@ -2480,6 +2527,7 @@ function Settings({
                     value={timezone}
                     onChange={(event) => setTimezone(event.target.value)}
                   >
+                    <option value="Asia/Kolkata">Asia/Kolkata</option>
                     <option value="America/New_York">America/New_York</option>
                     <option value="America/Los_Angeles">America/Los_Angeles</option>
                     <option value="UTC">UTC</option>
@@ -2517,8 +2565,8 @@ function Settings({
                   inputMode="numeric"
                 />
                 <small>
-                  Minor units. For USD, 100 means $1.00. Payments within this tolerance can be
-                  written off to Bank Fees after approval.
+                  Minor units. For {currency}, 100 means {formatMoney({ currency, minor: "100" })}.
+                  Payments within this tolerance can be written off to Bank Fees after approval.
                 </small>
               </label>
             </div>
