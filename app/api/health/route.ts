@@ -1,5 +1,7 @@
 import { checkStorageReadiness, getStorageInfo } from "@/lib/store";
 
+export const runtime = "nodejs";
+
 export async function GET() {
   try {
     await checkStorageReadiness();

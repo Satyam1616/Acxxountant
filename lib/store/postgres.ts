@@ -8,10 +8,17 @@ const stateId = "primary-workspace";
 const requiredMigrations = ["001", "002", "003", "004", "005"];
 const maxUpdateAttempts = 5;
 
-// Neon Pool/Client uses WebSockets. The Vercel request path and restricted
-// WSL networks are more reliable over Neon's HTTPS SQL endpoint. Force IPv4
-// because some environments advertise unreachable Neon IPv6 routes first.
-const httpDispatcher = new Agent({ connect: { family: 4, port: 443 } });
+// Neon Pool/Client uses WebSockets. The HTTPS SQL endpoint is reliable in
+// serverless runtimes and restricted WSL networks. Local WSL may advertise
+// unreachable Neon IPv6 routes first, so force IPv4 there. Vercel's native
+// fetch stack is used in production to avoid carrying a process-global custom
+// dispatcher across frozen serverless invocations.
+const httpDispatcher =
+  process.env.VERCEL === "1"
+    ? undefined
+    : new Agent({
+        connect: { family: 4, port: 443 },
+      });
 
 function getSql() {
   const connectionString = process.env.DATABASE_URL;
@@ -20,7 +27,9 @@ function getSql() {
       "database_not_configured",
       "DATABASE_URL is required for PostgreSQL storage",
     );
-  return neon(connectionString, { fetchOptions: { dispatcher: httpDispatcher } });
+  return httpDispatcher
+    ? neon(connectionString, { fetchOptions: { dispatcher: httpDispatcher } })
+    : neon(connectionString);
 }
 
 async function ensureTable(): Promise<void> {

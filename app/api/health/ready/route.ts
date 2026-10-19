@@ -1,6 +1,8 @@
 import { authStatus } from "@/lib/auth";
 import { checkStorageReadiness, getStorageInfo } from "@/lib/store";
 
+export const runtime = "nodejs";
+
 export async function GET() {
   const checks: Array<{
     name: string;
