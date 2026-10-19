@@ -12,6 +12,7 @@ LedgerFlow is a full-stack, local-first accounts-receivable workspace. It import
 - **Reports** for A/R aging, trial balance, profit and loss, and balance sheet.
 - **Settings** for auto-apply confidence and provider selection.
 - **Audit events** for every financial mutation.
+- **Public landing screen** with a secure sign-in entry point and a compact first-login workspace guide.
 - **Deterministic domain engine** using `bigint` minor-unit money, exact matching, categorization rules, journal validation, and reversal entries.
 - **Offline development storage** through an atomic JSON adapter in `data/ledgerflow.json`. The application boundary is ready for a PostgreSQL adapter when deployment needs multi-instance persistence.
 

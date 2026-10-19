@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import LandingScreen from "@/components/LandingScreen";
+import ProductTour, { tourSteps } from "@/components/ProductTour";
 
 type View = "overview" | "reconcile" | "invoices" | "customers" | "ledger" | "reports" | "settings";
 type MoneyWire = { currency: string; minor: string };
@@ -316,6 +318,9 @@ function downloadCsv(filename: string, headers: string[], rows: string[][]): voi
 export default function Workspace() {
   const [view, setView] = useState<View>("overview");
   const [session, setSession] = useState<SessionInfo | null | undefined>(undefined);
+  const [showLanding, setShowLanding] = useState(true);
+  const [tourStep, setTourStep] = useState<number | null>(null);
+  const tourInitialized = useRef(false);
   const [authConfigured, setAuthConfigured] = useState(true);
   const [authError, setAuthError] = useState("");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -379,6 +384,7 @@ export default function Workspace() {
         if (!active) return;
         setAuthConfigured(payload.configured !== false);
         if (payload.session) {
+          setShowLanding(false);
           setSession(payload.session);
           await reload();
         } else {
@@ -406,6 +412,15 @@ export default function Workspace() {
     if (view === "ledger") void loadLedger();
     if (view === "reports") void loadReports();
   }, [view, loadLedger, loadReports]);
+  useEffect(() => {
+    if (!session || !dashboard || tourInitialized.current) return;
+    tourInitialized.current = true;
+    try {
+      if (window.localStorage.getItem("ledgerflow-tour-v1") !== "done") setTourStep(0);
+    } catch {
+      setTourStep(0);
+    }
+  }, [session, dashboard]);
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -435,6 +450,32 @@ export default function Workspace() {
     await fetch("/api/auth/logout", { method: "POST" });
     setSession(null);
     setDashboard(null);
+    setTourStep(null);
+    tourInitialized.current = false;
+    setShowLanding(true);
+  };
+  const skipTour = () => {
+    try {
+      window.localStorage.setItem("ledgerflow-tour-v1", "done");
+    } catch {
+      // The guide can still be dismissed when browser storage is unavailable.
+    }
+    setTourStep(null);
+  };
+  const nextTourStep = () => {
+    if (tourStep === null) return;
+    if (tourStep >= tourSteps.length - 1) {
+      skipTour();
+      return;
+    }
+    const next = tourSteps[tourStep + 1];
+    setView(next.view);
+    setTourStep(tourStep + 1);
+  };
+  const startTour = () => {
+    tourInitialized.current = true;
+    setView("overview");
+    setTourStep(0);
   };
   const activeTransaction = dashboard?.reviewQueue.find(
     (item) => item.transaction.id === selectedId,
@@ -447,12 +488,14 @@ export default function Workspace() {
         <p>Preparing your books…</p>
       </div>
     );
+  if (!session && showLanding) return <LandingScreen onLogin={() => setShowLanding(false)} />;
   if (!session)
     return (
       <LoginScreen
         configured={authConfigured}
         initialError={authError}
         onLogin={(value) => {
+          setShowLanding(false);
           setSession(value);
           void reload();
         }}
@@ -494,7 +537,7 @@ export default function Workspace() {
           {navItems.map((item) => (
             <button
               key={item.id}
-              className={`nav-item ${view === item.id ? "active" : ""}`}
+              className={`nav-item ${view === item.id ? "active" : ""} ${tourStep !== null && tourSteps[tourStep]?.view === item.id ? "tour-focus" : ""}`}
               onClick={() => setView(item.id)}
             >
               <Icon name={item.icon} />
@@ -512,8 +555,8 @@ export default function Workspace() {
             </div>
             <strong>Need a hand?</strong>
             <span>Ask LedgerFlow AI about your books.</span>
-            <button onClick={() => setToast("AI assistant is ready in the review queue")}>
-              Open assistant <Icon name="arrow" size={13} />
+            <button onClick={startTour}>
+              Show workspace guide <Icon name="arrow" size={13} />
             </button>
           </div>
           <div className="user-row">
@@ -674,6 +717,7 @@ export default function Workspace() {
           {toast}
         </div>
       )}
+      {tourStep !== null && <ProductTour step={tourStep} onNext={nextTourStep} onSkip={skipTour} />}
     </div>
   );
 }
