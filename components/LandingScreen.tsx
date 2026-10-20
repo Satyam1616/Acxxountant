@@ -2,7 +2,13 @@
 
 import { moneyLabel } from "@/lib/presentation";
 
-export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
+export default function LandingScreen({
+  onLogin,
+  onSignup,
+}: {
+  onLogin: () => void;
+  onSignup: () => void;
+}) {
   return (
     <main className="landing-screen">
       <div className="landing-glow landing-glow-one" />
@@ -15,9 +21,14 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
             <span>finance workspace</span>
           </div>
         </div>
-        <button className="button secondary landing-login" onClick={onLogin}>
-          Sign in
-        </button>
+        <div className="landing-auth-actions">
+          <button className="button quiet landing-signup" onClick={onSignup}>
+            Sign up
+          </button>
+          <button className="button secondary landing-login" onClick={onLogin}>
+            Sign in
+          </button>
+        </div>
       </nav>
 
       <section className="landing-hero">

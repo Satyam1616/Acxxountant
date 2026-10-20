@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import LandingScreen from "@/components/LandingScreen";
+import AccessRequestScreen from "@/components/AccessRequestScreen";
 import ProductTour, { tourSteps } from "@/components/ProductTour";
 import { currencyMeta, supportedCurrencies } from "@/lib/domain/currency";
 import type { MoneyWire } from "@/lib/domain/types";
@@ -310,6 +311,7 @@ export default function Workspace() {
   const [view, setView] = useState<View>("overview");
   const [session, setSession] = useState<SessionInfo | null | undefined>(undefined);
   const [showLanding, setShowLanding] = useState(true);
+  const [showAccessRequest, setShowAccessRequest] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
   const tourInitialized = useRef(false);
   const [authConfigured, setAuthConfigured] = useState(true);
@@ -451,6 +453,7 @@ export default function Workspace() {
     setTourStep(null);
     tourInitialized.current = false;
     setShowLanding(true);
+    setShowAccessRequest(false);
   };
   const skipTour = () => {
     try {
@@ -493,14 +496,41 @@ export default function Workspace() {
         <p>Preparing your books…</p>
       </div>
     );
-  if (!session && showLanding) return <LandingScreen onLogin={() => setShowLanding(false)} />;
+  if (!session && showLanding)
+    return (
+      <LandingScreen
+        onLogin={() => {
+          setShowLanding(false);
+          setShowAccessRequest(false);
+        }}
+        onSignup={() => {
+          setShowLanding(false);
+          setShowAccessRequest(true);
+        }}
+      />
+    );
+  if (!session && showAccessRequest)
+    return (
+      <AccessRequestScreen
+        onBack={() => {
+          setShowAccessRequest(false);
+          setShowLanding(true);
+        }}
+        onSignIn={() => {
+          setShowAccessRequest(false);
+          setShowLanding(false);
+        }}
+      />
+    );
   if (!session)
     return (
       <LoginScreen
         configured={authConfigured}
         initialError={authError}
+        onSignup={() => setShowAccessRequest(true)}
         onLogin={(value) => {
           setShowLanding(false);
+          setShowAccessRequest(false);
           setSession(value);
           void reload();
         }}
@@ -766,13 +796,15 @@ export default function Workspace() {
   );
 }
 
-function LoginScreen({
+export function LoginScreen({
   configured,
   initialError,
+  onSignup,
   onLogin,
 }: {
   configured: boolean;
   initialError: string;
+  onSignup: () => void;
   onLogin: (session: SessionInfo) => void;
 }) {
   const [email, setEmail] = useState("admin@ledgerflow.local");
@@ -848,6 +880,9 @@ function LoginScreen({
             </button>
           </form>
         )}
+        <div className="auth-switch">
+          New to LedgerFlow? <button onClick={onSignup}>Sign up / request access</button>
+        </div>
         <div className="auth-foot">
           <Icon name="check" size={14} /> Your financial data is protected by an encrypted session.
         </div>

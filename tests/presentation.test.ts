@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import LandingScreen from "@/components/LandingScreen";
+import AccessRequestScreen from "@/components/AccessRequestScreen";
 import {
   CustomerModal,
   Customers,
   ImportModal,
+  LoginScreen,
   InvoiceModal,
   Overview,
   Settings,
@@ -316,7 +318,9 @@ describe("currency-aware dialogs", () => {
 
 describe("landing preview", () => {
   it("labels an illustrative INR demo with NEFT payment activity", () => {
-    const html = renderToStaticMarkup(createElement(LandingScreen, { onLogin: noop }));
+    const html = renderToStaticMarkup(
+      createElement(LandingScreen, { onLogin: noop, onSignup: noop }),
+    );
     expect(html).toContain("Illustrative demo");
     expect(html).toContain("NEFT · INV-1048");
     expect(html).toContain("₹42,860.00");
@@ -325,5 +329,31 @@ describe("landing preview", () => {
     expect(html).not.toContain("ACH");
     expect(html).not.toContain("synced");
     expect(html).toContain("Sign in");
+    expect(html).toContain("Sign up");
+  });
+});
+
+describe("access request presentation", () => {
+  it("shows honest request-access language and both navigation paths", () => {
+    const html = renderToStaticMarkup(
+      createElement(AccessRequestScreen, { onBack: noop, onSignIn: noop }),
+    );
+    expect(html).toContain("Request an invite");
+    expect(html).toContain("Request access");
+    expect(html).toContain("Requests are rate-limited and never create an account automatically.");
+    expect(html).toContain("Back home");
+    expect(html).toContain("Sign in");
+  });
+
+  it("shows request access from the sign-in screen", () => {
+    const html = renderToStaticMarkup(
+      createElement(LoginScreen, {
+        configured: true,
+        initialError: "",
+        onLogin: noop,
+        onSignup: noop,
+      }),
+    );
+    expect(html).toContain("Sign up / request access");
   });
 });

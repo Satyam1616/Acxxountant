@@ -1380,6 +1380,45 @@ input[type="checkbox"] {
 .auth-foot svg {
   color: var(--mint);
 }
+.auth-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 18px;
+  color: #8e99a8;
+  font-size: 10px;
+  text-align: center;
+}
+.auth-switch button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: inherit;
+  font-weight: 750;
+}
+.auth-switch button:hover {
+  text-decoration: underline;
+}
+.access-request-success {
+  padding: 18px;
+  border: 1px solid #d8eee7;
+  border-radius: 10px;
+  background: #f1fbf7;
+  color: #52786e;
+}
+.access-request-success strong {
+  display: block;
+  color: #2f6f60;
+  font-size: 15px;
+}
+.access-request-success p {
+  margin: 8px 0 16px;
+  font-size: 11px;
+  line-height: 17px;
+}
 .auth-card code {
   padding: 1px 3px;
   border-radius: 3px;
@@ -1451,6 +1490,15 @@ input[type="checkbox"] {
 }
 .landing-login {
   min-height: 34px;
+}
+.landing-auth-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.landing-signup {
+  min-height: 34px;
+  color: var(--blue);
 }
 .landing-hero {
   display: grid;
