@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isSupportedCurrency } from "@/lib/domain/currency";
 export type StoredMoney = { currency: string; minor: string };
 export type StoredJournalLine = {
   id: string;
@@ -46,8 +47,10 @@ export type StoredMatch = Omit<import("@/lib/domain/types").PaymentMatch, "alloc
   allocations: Array<{ invoiceId: string; amount: StoredMoney }>;
 };
 
+const currencySchema = z.string().refine(isSupportedCurrency, "Unsupported currency");
+
 const moneySchema = z.object({
-  currency: z.string().min(3).max(12),
+  currency: currencySchema,
   minor: z.string().regex(/^-?\d+$/),
 });
 
@@ -57,14 +60,14 @@ const accountSchema = z.object({
   name: z.string().min(1),
   type: z.enum(["asset", "liability", "equity", "income", "expense"]),
   control: z.enum(["bank", "receivable", "payable", "unapplied"]).nullable(),
-  currency: z.string().nullable(),
+  currency: currencySchema.nullable(),
   active: z.boolean(),
 });
 
 const settingsSchema = z.object({
   autoApplyThreshold: z.number().finite().min(0).max(1),
   feeToleranceMinor: z.string().regex(/^\d+$/),
-  defaultCurrency: z.string().min(3).max(12),
+  defaultCurrency: currencySchema,
   aiProvider: z.enum(["rules", "groq", "claude"]),
 });
 
@@ -106,7 +109,7 @@ const invoiceSchema = z.object({
   number: z.string().min(1),
   issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  currency: z.string().min(3).max(12),
+  currency: currencySchema,
   lines: z.array(
     z.object({
       id: z.string().min(1),
@@ -164,7 +167,7 @@ export const storageStateSchema = z
       organizationId: z.string().min(1),
       name: z.string().min(1),
       legalName: z.string().min(1),
-      currency: z.string().min(3).max(12),
+      currency: currencySchema,
       timezone: z.string().min(1),
       settings: settingsSchema,
     }),
@@ -176,7 +179,7 @@ export const storageStateSchema = z
         name: z.string().min(1),
         email: z.string().email(),
         company: z.string().optional(),
-        currency: z.string().min(3).max(12),
+        currency: currencySchema,
         createdAt: z.string().datetime(),
       }),
     ),

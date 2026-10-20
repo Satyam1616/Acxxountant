@@ -3,10 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import LandingScreen from "@/components/LandingScreen";
 import ProductTour, { tourSteps } from "@/components/ProductTour";
-import { currencyMeta, groupInteger } from "@/lib/domain/currency";
+import { currencyMeta, supportedCurrencies } from "@/lib/domain/currency";
+import type { MoneyWire } from "@/lib/domain/types";
+import {
+  amountPlaceholder,
+  amountPrecisionHint,
+  bankCsvExample,
+  dateLabel,
+  invoiceDueDate,
+  moneyLabel as formatMoney,
+} from "@/lib/presentation";
 
 type View = "overview" | "reconcile" | "invoices" | "customers" | "ledger" | "reports" | "settings";
-type MoneyWire = { currency: string; minor: string };
 type Dashboard = {
   entity: {
     name: string;
@@ -16,6 +24,7 @@ type Dashboard = {
     settings: { autoApplyThreshold: number; feeToleranceMinor: string; aiProvider: string };
   };
   reportingDate: string;
+  currencyChangeAllowed: boolean;
   storage: { adapter: string; durable: boolean; ephemeral: boolean };
   metrics: {
     outstanding: MoneyWire;
@@ -248,41 +257,6 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
   );
 }
 
-function formatMoney(value?: MoneyWire, compact = false) {
-  if (!value) return "—";
-  const digits = currencyMeta(value.currency).minorDigits;
-  const minor = BigInt(value.minor);
-  const negative = minor < 0n;
-  const absolute = (negative ? -minor : minor).toString().padStart(digits + 1, "0");
-  const rawWhole = absolute.slice(0, -digits || undefined);
-  const whole = groupInteger(rawWhole, value.currency);
-  const fraction = digits ? `.${absolute.slice(-digits)}` : "";
-  const symbol = value.currency === "INR" ? "₹" : value.currency;
-  const formatted = `${negative ? "-" : ""}${symbol}${value.currency === "INR" ? "" : " "}${whole}${fraction}`;
-  return compact && value.currency !== "INR" && rawWhole.length > 7
-    ? `${negative ? "-" : ""}${symbol}${value.currency === "INR" ? "" : " "}${whole.slice(0, -6)}M`
-    : formatted;
-}
-
-function dateLocale(timezone: string) {
-  return timezone === "Asia/Kolkata" ? "en-IN" : "en-US";
-}
-
-function dateLabel(value: string, timezone = "Asia/Kolkata") {
-  return new Intl.DateTimeFormat(dateLocale(timezone), {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: timezone,
-  }).format(new Date(`${value}T12:00:00Z`));
-}
-function shortDate(value: string, timezone = "Asia/Kolkata") {
-  return new Intl.DateTimeFormat(dateLocale(timezone), {
-    month: "short",
-    day: "numeric",
-    timeZone: timezone,
-  }).format(new Date(`${value}T12:00:00Z`));
-}
 function statusLabel(status: string) {
   return status === "partial" ? "Partially paid" : status.charAt(0).toUpperCase() + status.slice(1);
 }
@@ -705,7 +679,6 @@ export default function Workspace() {
             <Ledger
               entries={ledger}
               currency={dashboard.entity.currency}
-              timezone={dashboard.entity.timezone}
               loading={ledgerLoading}
               error={ledgerError}
               onRetry={() => void loadLedger()}
@@ -715,7 +688,6 @@ export default function Workspace() {
             <ReportsView
               reports={reports}
               currency={dashboard.entity.currency}
-              timezone={dashboard.entity.timezone}
               loading={reportsLoading}
               error={reportsError}
               onRetry={() => void loadReports()}
@@ -735,7 +707,7 @@ export default function Workspace() {
         <ReviewDrawer
           item={activeTransaction}
           accounts={dashboard.accounts}
-          timezone={dashboard.entity.timezone}
+          currency={dashboard.entity.currency}
           onClose={() => setSelectedId(null)}
           onAction={action}
           working={working}
@@ -758,6 +730,7 @@ export default function Workspace() {
       )}
       {modal === "customer" && (
         <CustomerModal
+          currency={dashboard.entity.currency}
           onClose={() => setModal(null)}
           onCreated={() => {
             setModal(null);
@@ -768,6 +741,7 @@ export default function Workspace() {
       )}
       {modal === "import" && (
         <ImportModal
+          currency={dashboard.entity.currency}
           onClose={() => {
             setModal(null);
             void reload();
@@ -882,7 +856,7 @@ function LoginScreen({
   );
 }
 
-function Overview({
+export function Overview({
   dashboard,
   onNavigate,
   onCreate,
@@ -903,13 +877,7 @@ function Overview({
   const highConfidenceCount = dashboard.reviewQueue.filter(
     (item) => (item.match?.confidence ?? 0) >= dashboard.entity.settings.autoApplyThreshold,
   ).length;
-  const reportingDate = new Intl.DateTimeFormat(dateLocale(dashboard.entity.timezone), {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: dashboard.entity.timezone,
-  }).format(new Date(`${dashboard.reportingDate}T12:00:00Z`));
+  const reportingDate = dateLabel(dashboard.reportingDate, dashboard.entity.currency, "long");
   return (
     <>
       <div className="page-heading hero-heading">
@@ -979,7 +947,7 @@ function Overview({
             <div className="aging-total">
               <span>Total outstanding</span>
               <strong>{formatMoney(dashboard.metrics.outstanding)}</strong>
-              <small>as of {dateLabel(dashboard.reportingDate, dashboard.entity.timezone)}</small>
+              <small>as of {dateLabel(dashboard.reportingDate, dashboard.entity.currency)}</small>
             </div>
             <div className="aging-legend">
               <span>
@@ -1017,7 +985,7 @@ function Overview({
                       style={{ width: `${(Number(overdueMinor(row)) / maxAging) * 100}%` }}
                     />
                   </div>
-                  <strong>{formatMoney(row.total, true)}</strong>
+                  <strong>{formatMoney(row.total)}</strong>
                 </div>
               ))
             ) : (
@@ -1101,7 +1069,7 @@ function Overview({
                   <strong>{transaction.description}</strong>
                   <span>
                     {transaction.status === "posted" ? "Posted to ledger" : "Awaiting review"} ·{" "}
-                    {shortDate(transaction.date, dashboard.entity.timezone)}
+                    {dateLabel(transaction.date, dashboard.entity.currency, "short")}
                   </span>
                 </div>
                 <b className={transaction.flow === "inflow" ? "positive" : "negative"}>
@@ -1383,7 +1351,7 @@ function Reconcile({
                   <TransactionRow
                     key={row.transaction.id}
                     row={row}
-                    timezone={dashboard.entity.timezone}
+                    currency={dashboard.entity.currency}
                     selected={selectedId === row.transaction.id}
                     checked={selectedRows.has(row.transaction.id)}
                     onToggle={(checked) =>
@@ -1421,7 +1389,7 @@ function Reconcile({
 
 function TransactionRow({
   row,
-  timezone,
+  currency,
   selected,
   checked,
   onToggle,
@@ -1430,7 +1398,7 @@ function TransactionRow({
   canMutate,
 }: {
   row: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
-  timezone: string;
+  currency: string;
   selected: boolean;
   checked: boolean;
   onToggle: (checked: boolean) => void;
@@ -1466,7 +1434,7 @@ function TransactionRow({
           onClick={(event) => event.stopPropagation()}
         />
       </td>
-      <td className="muted-cell">{shortDate(transaction.date, timezone)}</td>
+      <td className="muted-cell">{dateLabel(transaction.date, currency, "short")}</td>
       <td>
         <div className="table-party">
           <span className={`mini-party ${transaction.flow}`}>
@@ -1544,7 +1512,7 @@ function Confidence({ value }: { value: number }) {
 function ReviewDrawer({
   item,
   accounts,
-  timezone,
+  currency,
   onClose,
   onAction,
   working,
@@ -1552,7 +1520,7 @@ function ReviewDrawer({
 }: {
   item: { transaction: Transaction; match?: Match; invoice?: Invoice; customer?: Customer };
   accounts: Account[];
-  timezone: string;
+  currency: string;
   onClose: () => void;
   onAction: (label: string, fn: () => Promise<unknown>) => Promise<void>;
   working: string | null;
@@ -1581,7 +1549,7 @@ function ReviewDrawer({
               {transaction.counterparty || transaction.description}
             </h2>
             <span className="drawer-reference">
-              {transaction.reference || "No reference"} · {dateLabel(transaction.date, timezone)}
+              {transaction.reference || "No reference"} · {dateLabel(transaction.date, currency)}
             </span>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
@@ -1889,10 +1857,10 @@ function Invoices({
                         </div>
                       </td>
                       <td className="muted-cell">
-                        {dateLabel(invoice.issueDate, dashboard.entity.timezone)}
+                        {dateLabel(invoice.issueDate, dashboard.entity.currency)}
                       </td>
                       <td className={invoice.status === "overdue" ? "danger-cell" : "muted-cell"}>
-                        {dateLabel(invoice.dueDate, dashboard.entity.timezone)}
+                        {dateLabel(invoice.dueDate, dashboard.entity.currency)}
                       </td>
                       <td>
                         <strong>{formatMoney(invoice.total)}</strong>
@@ -1935,7 +1903,7 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Customers({
+export function Customers({
   dashboard,
   query,
   onCreate,
@@ -1970,9 +1938,13 @@ function Customers({
           const invoices = dashboard.invoices.filter(
             (invoice) => invoice.customerId === customer.id,
           );
-          const outstanding = invoices
-            .filter((invoice) => invoice.status !== "paid")
-            .reduce((sum, invoice) => sum + BigInt(invoice.total.minor), 0n);
+          const openInvoices = invoices.filter((invoice) =>
+            ["issued", "partial", "overdue"].includes(invoice.status),
+          );
+          const outstanding = openInvoices.reduce(
+            (sum, invoice) => sum + BigInt(invoice.outstanding?.minor ?? invoice.total.minor),
+            0n,
+          );
           return (
             <div className="customer-card card" key={customer.id}>
               <div className="customer-card-head">
@@ -1995,13 +1967,15 @@ function Customers({
                 </div>
                 <div>
                   <span>Open invoices</span>
-                  <strong>{invoices.filter((invoice) => invoice.status !== "paid").length}</strong>
+                  <strong>{openInvoices.length}</strong>
                 </div>
               </div>
               <div className="customer-card-foot">
                 <span>
                   Last activity{" "}
-                  {invoices[0] ? shortDate(invoices[0].issueDate, dashboard.entity.timezone) : "—"}
+                  {invoices[0]
+                    ? dateLabel(invoices[0].issueDate, dashboard.entity.currency, "short")
+                    : "—"}
                 </span>
                 <button>
                   View profile <Icon name="arrow" size={13} />
@@ -2028,14 +2002,12 @@ function Customers({
 function Ledger({
   entries,
   currency,
-  timezone,
   loading,
   error,
   onRetry,
 }: {
   entries: LedgerEntry[];
   currency: string;
-  timezone: string;
   loading: boolean;
   error: string;
   onRetry: () => void;
@@ -2134,7 +2106,7 @@ function Ledger({
             {entries.map((entry) => (
               <div className="ledger-entry" key={entry.id}>
                 <div className="ledger-date">
-                  <strong>{shortDate(entry.date, timezone)}</strong>
+                  <strong>{dateLabel(entry.date, currency, "short")}</strong>
                   <span>{entry.source.replace("bank-reconciliation", "reconciliation")}</span>
                 </div>
                 <div className="ledger-description">
@@ -2175,14 +2147,12 @@ function Ledger({
 function ReportsView({
   reports,
   currency,
-  timezone,
   loading,
   error,
   onRetry,
 }: {
   reports: Reports | null;
   currency: string;
-  timezone: string;
   loading: boolean;
   error: string;
   onRetry: () => void;
@@ -2293,7 +2263,7 @@ function ReportsView({
               <Icon name="close" size={18} /> Out of balance
             </strong>
           )}
-          <small>As of {dateLabel(reports.asOf, timezone)}</small>
+          <small>As of {dateLabel(reports.asOf, currency)}</small>
         </div>
       </div>
       <section className="card table-card">
@@ -2409,7 +2379,7 @@ function ReportsView({
   );
 }
 
-function Settings({
+export function Settings({
   dashboard,
   onSaved,
   onError,
@@ -2432,6 +2402,8 @@ function Settings({
     dashboard.entity.settings.feeToleranceMinor,
   );
   const [saving, setSaving] = useState(false);
+  const currencyLocked = !dashboard.currencyChangeAllowed;
+  const selectedCurrency = currencyLocked ? dashboard.entity.currency : currency;
   const save = async () => {
     setSaving(true);
     onError("");
@@ -2441,7 +2413,7 @@ function Settings({
         body: JSON.stringify({
           name,
           legalName,
-          currency,
+          currency: selectedCurrency,
           timezone,
           autoApplyThreshold: Number(threshold) / 100,
           feeToleranceMinor,
@@ -2505,20 +2477,23 @@ function Settings({
                 <label>
                   Base currency
                   <select
-                    disabled={!canEdit}
-                    value={currency}
+                    disabled={!canEdit || currencyLocked}
+                    value={selectedCurrency}
+                    aria-describedby={currencyLocked ? "currency-lock-hint" : undefined}
                     onChange={(event) => setCurrency(event.target.value)}
                   >
-                    <option value="INR">INR — Indian Rupee</option>
-                    <option value="USD">USD — US Dollar</option>
-                    <option value="EUR">EUR — Euro</option>
-                    <option value="GBP">GBP — Pound Sterling</option>
-                    <option value="CAD">CAD — Canadian Dollar</option>
-                    <option value="JPY">JPY — Japanese Yen</option>
-                    <option value="KRW">KRW — South Korean Won</option>
-                    <option value="BHD">BHD — Bahraini Dinar</option>
-                    <option value="KWD">KWD — Kuwaiti Dinar</option>
+                    {supportedCurrencies.map((code) => (
+                      <option key={code} value={code}>
+                        {code} — {currencyMeta(code).name}
+                      </option>
+                    ))}
                   </select>
+                  {currencyLocked && (
+                    <small id="currency-lock-hint">
+                      Base currency is locked once invoices, bank transactions, journal entries, or
+                      matches exist.
+                    </small>
+                  )}
                 </label>
                 <label>
                   Timezone
@@ -2532,6 +2507,10 @@ function Settings({
                     <option value="America/Los_Angeles">America/Los_Angeles</option>
                     <option value="UTC">UTC</option>
                   </select>
+                  <small>
+                    Sets the reporting day. Invoice, transaction, and journal dates keep their
+                    recorded calendar day.
+                  </small>
                 </label>
               </div>
             </div>
@@ -2565,8 +2544,9 @@ function Settings({
                   inputMode="numeric"
                 />
                 <small>
-                  Minor units. For {currency}, 100 means {formatMoney({ currency, minor: "100" })}.
-                  Payments within this tolerance can be written off to Bank Fees after approval.
+                  Minor units. For {selectedCurrency}, 100 means{" "}
+                  {formatMoney({ currency: selectedCurrency, minor: "100" })}. Payments within this
+                  tolerance can be written off to Bank Fees after approval.
                 </small>
               </label>
             </div>
@@ -2651,7 +2631,7 @@ function ModalFrame({
   );
 }
 
-function InvoiceModal({
+export function InvoiceModal({
   dashboard,
   onClose,
   onCreated,
@@ -2663,7 +2643,7 @@ function InvoiceModal({
   const [customerId, setCustomerId] = useState(dashboard.customers[0]?.id ?? "");
   const [description, setDescription] = useState("Professional services");
   const [amount, setAmount] = useState("");
-  const [dueDate, setDueDate] = useState("2026-11-18");
+  const [dueDate, setDueDate] = useState(() => invoiceDueDate(dashboard.reportingDate));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event: React.FormEvent) => {
@@ -2710,14 +2690,19 @@ function InvoiceModal({
         </label>
         <div className="form-row">
           <label>
-            Amount
+            Amount ({dashboard.entity.currency}
+            {dashboard.entity.currency === "INR" ? " · ₹" : ""})
             <input
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
-              placeholder="0.00"
-              inputMode="decimal"
+              placeholder={amountPlaceholder(dashboard.entity.currency)}
+              inputMode={
+                currencyMeta(dashboard.entity.currency).minorDigits ? "decimal" : "numeric"
+              }
+              aria-describedby="invoice-amount-hint"
               required
             />
+            <small id="invoice-amount-hint">{amountPrecisionHint(dashboard.entity.currency)}</small>
           </label>
           <label>
             Due date
@@ -2737,6 +2722,11 @@ function InvoiceModal({
             Cr Consulting Revenue
           </strong>
           <small>Journal entry will be created and balanced automatically.</small>
+          <small>
+            {dashboard.entity.currency === "INR"
+              ? "INR amounts are stored as paise; 100 paise = ₹1.00."
+              : `Amounts are stored in ${dashboard.entity.currency} minor units.`}
+          </small>
         </div>
         <div className="modal-actions">
           <button type="button" className="button quiet" onClick={onClose}>
@@ -2751,7 +2741,15 @@ function InvoiceModal({
   );
 }
 
-function CustomerModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+export function CustomerModal({
+  currency,
+  onClose,
+  onCreated,
+}: {
+  currency: string;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
@@ -2780,6 +2778,13 @@ function CustomerModal({ onClose, onCreated }: { onClose: () => void; onCreated:
     <ModalFrame title="Add a customer" eyebrow="Customer directory" onClose={onClose}>
       <form className="modal-form" onSubmit={submit}>
         {error && <div className="form-error">{error}</div>}
+        <div className="modal-summary">
+          <span>Billing currency</span>
+          <strong>
+            {currency} — {currencyMeta(currency).name}
+          </strong>
+          <small>Invoices for this customer use the workspace currency.</small>
+        </div>
         <label>
           Customer name
           <input
@@ -2820,28 +2825,35 @@ function CustomerModal({ onClose, onCreated }: { onClose: () => void; onCreated:
   );
 }
 
-function ImportModal({
+export function ImportModal({
+  currency,
   onClose,
   onImported,
 }: {
+  currency: string;
   onClose: () => void;
   onImported: (message: string) => void;
 }) {
-  const [csv, setCsv] = useState("Date,Amount,Description,Reference,Counterparty\n");
-  const [fileName, setFileName] = useState("");
+  const [file, setFile] = useState<{ name: string; csv: string } | null>(null);
+  const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [rowErrors, setRowErrors] = useState<Array<{ row: number; message: string }>>([]);
   const [result, setResult] = useState("");
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (saving || reading) return;
+    if (!file?.csv.trim()) {
+      setError("Choose a CSV file with transactions before importing.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
       const response = await fetch("/api/transactions/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ csv }),
+        body: JSON.stringify({ csv: file.csv }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Import failed");
@@ -2857,7 +2869,11 @@ function ImportModal({
     }
   };
   return (
-    <ModalFrame title="Import bank transactions" eyebrow="Cash application" onClose={onClose}>
+    <ModalFrame
+      title="Import bank transactions"
+      eyebrow={`Cash application · ${currency}`}
+      onClose={onClose}
+    >
       <form className="modal-form" onSubmit={submit}>
         {error && <div className="form-error">{error}</div>}
         {result && <div className="import-result">{result}</div>}
@@ -2865,26 +2881,51 @@ function ImportModal({
           <input
             type="file"
             accept=".csv,text/csv"
+            required
+            disabled={saving || reading}
             onChange={async (event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                setFileName(file.name);
-                setCsv(await file.text());
+              const selected = event.target.files?.[0];
+              setFile(null);
+              setError("");
+              setResult("");
+              setRowErrors([]);
+              if (!selected) return;
+              setReading(true);
+              try {
+                const csv = await selected.text();
+                if (!csv.trim())
+                  throw new Error("This CSV file is empty. Choose a file with transactions.");
+                setFile({ name: selected.name, csv });
+              } catch (reason) {
+                setError(
+                  reason instanceof Error ? reason.message : "Unable to read this CSV file.",
+                );
+              } finally {
+                setReading(false);
               }
             }}
           />
           <span className="upload-cloud">
             <Icon name="upload" size={22} />
           </span>
-          <strong>{fileName || "Choose a CSV file"}</strong>
-          <small>We detect date, amount, memo, and reference columns automatically.</small>
+          <strong>{reading ? "Reading CSV…" : (file?.name ?? "Choose a CSV file")}</strong>
+          <small>
+            We detect date, amount, memo, and reference columns automatically. Values are read as{" "}
+            {currency} — {currencyMeta(currency).name}. {amountPrecisionHint(currency)}
+          </small>
         </label>
         <div className="csv-preview">
           <div>
-            <span>Preview</span>
-            <small>{Math.max(0, csv.trim().split("\n").length - 1)} data rows</small>
+            <span>{file ? "File preview" : "Example only · not selected"}</span>
+            <small>{file ? "First lines of your CSV" : "Choose your own CSV to import"}</small>
           </div>
-          <pre>{csv.trim().split("\n").slice(0, 4).join("\n")}</pre>
+          <pre>
+            {(file?.csv ?? bankCsvExample(currency))
+              .trim()
+              .split(/\r\n|\n|\r/)
+              .slice(0, 4)
+              .join("\n")}
+          </pre>
         </div>
         {rowErrors.length > 0 && (
           <div className="import-errors">
@@ -2901,7 +2942,7 @@ function ImportModal({
           <button type="button" className="button quiet" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled={saving || !csv.trim()}>
+          <button className="button primary" disabled={saving || reading || !file?.csv.trim()}>
             {saving ? "Importing…" : "Import transactions"} <Icon name="arrow" size={15} />
           </button>
         </div>

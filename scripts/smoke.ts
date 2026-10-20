@@ -1,6 +1,4 @@
-import { approveTransaction, getDashboard, getReports } from "../lib/application";
 import { journalBalance } from "../lib/domain/ledger";
-import { getState, resetState } from "../lib/store";
 import { snapshotFromStored } from "../lib/store/serialize";
 
 async function main() {
@@ -9,8 +7,15 @@ async function main() {
       "Smoke reset is disabled in production or PostgreSQL mode; use an isolated test database",
     );
   }
+  // Import storage only after forcing an isolated temporary JSON workspace. A
+  // configured DATABASE_URL must never make the smoke check reset real data.
+  Object.assign(process.env, { NODE_ENV: "test", STORAGE_ADAPTER: "json" });
+  const { getState, resetState } = await import("../lib/store");
+  const { approveTransaction, getDashboard, getReports } = await import("../lib/application");
   await resetState();
   const before = await getDashboard();
+  if (before.entity.currency !== "INR" || before.entity.timezone !== "Asia/Kolkata")
+    throw new Error("Smoke check failed: India workspace defaults are incorrect");
   console.log(`workspace: ${before.entity.name}`);
   console.log(`review queue: ${before.metrics.needsReview}`);
   await approveTransaction("bank_2", { mode: "suggestion" });

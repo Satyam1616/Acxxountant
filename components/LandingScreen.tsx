@@ -1,5 +1,7 @@
 "use client";
 
+import { moneyLabel } from "@/lib/presentation";
+
 export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
   return (
     <main className="landing-screen">
@@ -34,7 +36,7 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
           </div>
         </div>
 
-        <div className="landing-preview" aria-label="LedgerFlow workspace preview">
+        <div className="landing-preview" aria-label="Illustrative INR workspace demo">
           <div className="preview-window-bar">
             <span className="preview-dots">
               <i />
@@ -43,7 +45,7 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
             </span>
             <span>Northstar Finance</span>
             <span className="preview-live">
-              <i /> synced
+              <i /> Illustrative demo
             </span>
           </div>
           <div className="preview-body">
@@ -66,7 +68,7 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
               <div className="preview-metrics">
                 <div>
                   <small>OUTSTANDING</small>
-                  <strong>$42,860</strong>
+                  <strong>{moneyLabel({ currency: "INR", minor: "4286000" })}</strong>
                   <em>↑ 8.4%</em>
                 </div>
                 <div>
@@ -84,9 +86,9 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
                   <span className="preview-icon mint">↗</span>
                   <div>
                     <b>Brightside Health</b>
-                    <small>ACH · INV-1048</small>
+                    <small>NEFT · INV-1048</small>
                   </div>
-                  <strong>+$12,450</strong>
+                  <strong>+{moneyLabel({ currency: "INR", minor: "1245000" })}</strong>
                 </div>
                 <div className="preview-row">
                   <span className="preview-icon blue">↘</span>
@@ -94,7 +96,7 @@ export default function LandingScreen({ onLogin }: { onLogin: () => void }) {
                     <b>AWS cloud hosting</b>
                     <small>Bank activity · suggested</small>
                   </div>
-                  <strong>-$842</strong>
+                  <strong>{moneyLabel({ currency: "INR", minor: "-84200" })}</strong>
                 </div>
                 <div className="preview-row">
                   <span className="preview-icon amber">?</span>

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { StorageError } from "@/lib/domain/errors";
 import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
@@ -22,9 +23,15 @@ const storageAdapter: StorageAdapter = configuredAdapter
     ? "postgres"
     : "json";
 
-const storagePath = process.env.VERCEL
-  ? path.join("/tmp", "ledgerflow.json")
-  : path.join(process.cwd(), "data", "ledgerflow.json");
+const storagePath =
+  process.env.NODE_ENV === "test"
+    ? path.join(
+        tmpdir(),
+        `ledgerflow-test-${process.pid}-${process.env.VITEST_POOL_ID ?? "smoke"}.json`,
+      )
+    : process.env.VERCEL
+      ? path.join("/tmp", "ledgerflow.json")
+      : path.join(process.cwd(), "data", "ledgerflow.json");
 let statePromise: Promise<StorageState> | undefined;
 let writeQueue: Promise<void> = Promise.resolve();
 

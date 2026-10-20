@@ -39,6 +39,15 @@ import type { StorageState } from "@/lib/store/schema";
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 
+function canChangeCurrency(state: StorageState): boolean {
+  return (
+    state.invoices.length === 0 &&
+    state.transactions.length === 0 &&
+    state.journalEntries.length === 0 &&
+    state.matches.length === 0
+  );
+}
+
 export async function getDashboard() {
   const state = await getState();
   const snapshot = snapshotFromStored(state);
@@ -76,6 +85,7 @@ export async function getDashboard() {
     });
   return {
     entity: snapshot.entity,
+    currencyChangeAllowed: canChangeCurrency(state),
     storage: getStorageInfo(),
     reportingDate: today,
     metrics: {
@@ -475,6 +485,8 @@ export async function createInvoice(input: z.infer<typeof invoiceSchema>, actorN
   await updateState((state) => {
     const customer = state.customers.find((item) => item.id === input.customerId);
     invariant(customer, "customer_not_found");
+    invariant(customer.entityId === state.entity.id, "entity_mismatch");
+    invariant(customer.currency === state.entity.currency, "customer_currency_mismatch");
     const amount = parseAmount(input.amount, state.entity.currency);
     invariant(amount.minor > 0n, "amount_must_be_positive");
     const number = `INV-${String(1048 + state.invoices.length).padStart(4, "0")}`;
@@ -611,12 +623,18 @@ export async function saveSettings(settings: unknown, actorName = "system") {
   await updateState((state) => {
     if (parsed.currency && parsed.currency !== state.entity.currency) {
       invariant(
-        state.invoices.length === 0 &&
-          state.transactions.length === 0 &&
-          state.journalEntries.length === 0,
+        canChangeCurrency(state),
         "currency_change_forbidden",
         "Base currency cannot change after financial activity exists",
       );
+      // Before the first financial activity, keep the unused chart/customer defaults
+      // aligned so that the first invoice can actually post in the selected currency.
+      for (const account of state.accounts) {
+        if (account.currency === state.entity.currency) account.currency = parsed.currency;
+      }
+      for (const customer of state.customers) {
+        if (customer.currency === state.entity.currency) customer.currency = parsed.currency;
+      }
     }
     state.entity = {
       ...state.entity,

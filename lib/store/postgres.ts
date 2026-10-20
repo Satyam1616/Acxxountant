@@ -1,6 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { Agent } from "undici";
-import { StorageError } from "@/lib/domain/errors";
+import { DomainError, StorageError } from "@/lib/domain/errors";
 import { createSeedState } from "./seed";
 import { validateStorageState, type StorageState } from "./schema";
 
@@ -164,7 +164,7 @@ export async function updatePostgresState(
       "The workspace changed while it was being saved; please retry",
     );
   } catch (error) {
-    if (error instanceof StorageError) throw error;
+    if (error instanceof StorageError || error instanceof DomainError) throw error;
     throw new StorageError("database_write_failed", "The workspace could not be saved");
   }
 }

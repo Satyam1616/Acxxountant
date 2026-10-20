@@ -2,7 +2,11 @@ import type { StorageState } from "./schema";
 
 const createdAt = "2026-10-18T09:00:00.000Z";
 const baseCurrency = "INR" as const;
-const baseMoney = (minor: number) => ({ currency: baseCurrency, minor: String(minor) });
+const baseMinor = (rupees: number, paise = 0) => BigInt(rupees) * 100n + BigInt(paise);
+const baseMoney = (rupees: number, paise = 0) => ({
+  currency: baseCurrency,
+  minor: baseMinor(rupees, paise).toString(),
+});
 
 export function createSeedState(): StorageState {
   const accounts = [
@@ -136,12 +140,12 @@ export function createSeedState(): StorageState {
     },
   ];
   const invoiceData = [
-    ["inv_1042", "cust_acme", "INV-1042", "2026-09-10", "2026-10-10", 12500, "paid"],
-    ["inv_1043", "cust_brightside", "INV-1043", "2026-10-01", "2026-10-22", 4800, "issued"],
-    ["inv_1044", "cust_northstar", "INV-1044", "2026-09-01", "2026-09-30", 8200, "issued"],
-    ["inv_1045", "cust_lumen", "INV-1045", "2026-10-05", "2026-10-25", 2500, "issued"],
-    ["inv_1046", "cust_orbit", "INV-1046", "2026-09-05", "2026-10-05", 7600, "issued"],
-    ["inv_1047", "cust_acme", "INV-1047", "2026-10-06", "2026-10-28", 3250, "issued"],
+    ["inv_1042", "cust_acme", "INV-1042", "2026-09-10", "2026-10-10", 125000, "paid"],
+    ["inv_1043", "cust_brightside", "INV-1043", "2026-10-01", "2026-10-22", 48000, "issued"],
+    ["inv_1044", "cust_northstar", "INV-1044", "2026-09-01", "2026-09-30", 82000, "issued"],
+    ["inv_1045", "cust_lumen", "INV-1045", "2026-10-05", "2026-10-25", 25000, "issued"],
+    ["inv_1046", "cust_orbit", "INV-1046", "2026-09-05", "2026-10-05", 76000, "issued"],
+    ["inv_1047", "cust_acme", "INV-1047", "2026-10-06", "2026-10-28", 32500, "issued"],
   ] as const;
   const invoices = invoiceData.map(
     ([id, customerId, number, issueDate, dueDate, total, status]) => ({
@@ -160,7 +164,7 @@ export function createSeedState(): StorageState {
           id: `${id}_line`,
           description: "Professional services",
           quantity: 1,
-          unitMinor: String(total),
+          unitMinor: baseMinor(total).toString(),
           accountId: "acct_revenue",
         },
       ],
@@ -198,7 +202,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-ACME-1042",
       date: "2026-10-14",
-      amount: baseMoney(12500),
+      amount: baseMoney(125000),
       flow: "inflow" as const,
       description: "Payment from Acme Industries",
       reference: "INV-1042",
@@ -213,9 +217,9 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-BRIGHTSIDE-1043",
       date: "2026-10-16",
-      amount: baseMoney(4800),
+      amount: baseMoney(48000),
       flow: "inflow" as const,
-      description: "Brightside Health ACH",
+      description: "Brightside Health NEFT payment",
       reference: "INV-1043",
       counterparty: "Brightside Health",
       status: "suggested" as const,
@@ -227,7 +231,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-NORTHSTAR-MULTI",
       date: "2026-10-17",
-      amount: baseMoney(11450),
+      amount: baseMoney(114500),
       flow: "inflow" as const,
       description: "Northstar Labs remittance",
       reference: "INV-1044 / INV-1047",
@@ -241,7 +245,7 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "AWS-202610",
       date: "2026-10-11",
-      amount: baseMoney(1450),
+      amount: baseMoney(14500),
       flow: "outflow" as const,
       description: "AWS cloud hosting",
       reference: "AWS-OCT-2026",
@@ -255,9 +259,9 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "WIRE-UNKNOWN-01",
       date: "2026-10-12",
-      amount: baseMoney(6400),
+      amount: baseMoney(64000),
       flow: "inflow" as const,
-      description: "Incoming wire transfer",
+      description: "Incoming NEFT transfer",
       reference: "WIRE-UNKNOWN-01",
       counterparty: "",
       status: "unreviewed" as const,
@@ -268,11 +272,11 @@ export function createSeedState(): StorageState {
       entityId: "entity_demo",
       externalId: "GUSTO-202610",
       date: "2026-10-15",
-      amount: baseMoney(875),
+      amount: baseMoney(8750),
       flow: "outflow" as const,
-      description: "Gusto payroll processing",
-      reference: "GUSTO-OCT",
-      counterparty: "Gusto",
+      description: "Payroll processing",
+      reference: "PAYROLL-OCT",
+      counterparty: "Payroll provider",
       status: "suggested" as const,
       matchId: "match_6",
       createdAt,
@@ -286,7 +290,7 @@ export function createSeedState(): StorageState {
       status: "approved" as const,
       confidence: 0.99,
       rationale: ["Invoice number found in bank reference", "Amount matches exactly"],
-      allocations: [{ invoiceId: "inv_1042", amount: baseMoney(12500) }],
+      allocations: [{ invoiceId: "inv_1042", amount: baseMoney(125000) }],
       createdAt,
       resolvedAt: createdAt,
     },
@@ -297,7 +301,7 @@ export function createSeedState(): StorageState {
       status: "proposed" as const,
       confidence: 0.99,
       rationale: ["Invoice number found in bank reference", "Amount matches exactly"],
-      allocations: [{ invoiceId: "inv_1043", amount: baseMoney(4800) }],
+      allocations: [{ invoiceId: "inv_1043", amount: baseMoney(48000) }],
       createdAt,
     },
     {
@@ -308,8 +312,8 @@ export function createSeedState(): StorageState {
       confidence: 0.84,
       rationale: ["Payment exactly covers 2 invoices"],
       allocations: [
-        { invoiceId: "inv_1044", amount: baseMoney(8200) },
-        { invoiceId: "inv_1047", amount: baseMoney(3250) },
+        { invoiceId: "inv_1044", amount: baseMoney(82000) },
+        { invoiceId: "inv_1047", amount: baseMoney(32500) },
       ],
       createdAt,
     },
@@ -349,14 +353,14 @@ export function createSeedState(): StorageState {
         id: "bank_1:bank",
         accountId: "acct_bank",
         side: "debit" as const,
-        amount: baseMoney(12500),
+        amount: baseMoney(125000),
         memo: "Payment from Acme Industries",
       },
       {
         id: "bank_1:invoice:inv_1042",
         accountId: "acct_ar",
         side: "credit" as const,
-        amount: baseMoney(12500),
+        amount: baseMoney(125000),
         memo: "Apply to invoice inv_1042",
       },
     ],
@@ -373,7 +377,7 @@ export function createSeedState(): StorageState {
       timezone: "Asia/Kolkata",
       settings: {
         autoApplyThreshold: 0.9,
-        feeToleranceMinor: "100",
+        feeToleranceMinor: "1000",
         defaultCurrency: baseCurrency,
         aiProvider: "rules",
       },

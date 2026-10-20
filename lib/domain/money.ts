@@ -1,5 +1,5 @@
 import { DomainError, invariant } from "./errors";
-import { currencyMeta, groupInteger } from "./currency";
+import { currencyMeta, groupInteger, isSupportedCurrency } from "./currency";
 import type { CurrencyCode, Money, MoneyWire } from "./types";
 
 export function minorDigits(currency: CurrencyCode): number {
@@ -51,26 +51,41 @@ export function isPositive(a: Money): boolean {
 }
 
 export function parseAmount(value: string | number, currency: CurrencyCode): Money {
-  const raw = String(value)
-    .trim()
-    .replace(/,/g, "")
-    .replace(/^[+₹$€£]/, "")
-    .trim();
-  if (!raw || /e/i.test(raw) || !/^-?\d+(?:\.\d+)?$/.test(raw)) {
+  let raw = String(value).trim();
+  let sign = /^[+-]/.test(raw) ? raw[0] : "";
+  if (sign) raw = raw.slice(1).trim();
+  // Unknown currencies retain numeric precision fallback, but have no known symbol.
+  const symbol = isSupportedCurrency(currency) ? currencyMeta(currency).symbol : undefined;
+  if (symbol && raw.startsWith(symbol)) {
+    raw = raw.slice(symbol.length).trim();
+    if (!sign && /^[+-]/.test(raw)) {
+      sign = raw[0];
+      raw = raw.slice(1).trim();
+    }
+  }
+  if (!/^\d+(?:,\d+)*(?:\.\d+)?$/.test(raw)) {
     throw new DomainError("invalid_amount", `Invalid ${currency} amount: ${value}`);
   }
 
-  const negative = raw.startsWith("-");
-  const unsigned = negative ? raw.slice(1) : raw;
-  const [whole, fraction = ""] = unsigned.split(".");
+  const [whole, fraction = ""] = raw.split(".");
+  // INR accepts both lakh/crore and conventional thousands grouping.
+  if (
+    whole.includes(",") &&
+    !/^\d{1,3}(?:,\d{3})+$/.test(whole) &&
+    !(currency === "INR" && /^\d{1,2}(?:,\d{2})*,\d{3}$/.test(whole))
+  ) {
+    throw new DomainError("invalid_amount", `Invalid ${currency} grouping: ${value}`);
+  }
   const digits = minorDigits(currency);
   invariant(
     fraction.length <= digits,
     "too_many_decimals",
     `${currency} supports ${digits} decimals`,
   );
-  const minor = BigInt(whole) * 10n ** BigInt(digits) + BigInt(fraction.padEnd(digits, "0") || "0");
-  return money(currency, negative ? -minor : minor);
+  const minor =
+    BigInt(whole.replace(/,/g, "")) * 10n ** BigInt(digits) +
+    BigInt(fraction.padEnd(digits, "0") || "0");
+  return money(currency, sign === "-" ? -minor : minor);
 }
 
 export function formatMoney(value: Money, options?: { sign?: boolean }): string {

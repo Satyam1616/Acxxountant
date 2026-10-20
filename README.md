@@ -26,7 +26,7 @@ No database, API key, or network connection is required for the local demo. The 
 ## Setup
 
 ```bash
-npm install
+npm ci
 cp .env.example .env.local
 npm run dev
 ```
@@ -40,6 +40,29 @@ In development, sign in with `admin@ledgerflow.local` and password `demo` when n
 Fresh local workspaces use Indian defaults: INR as the base currency and `Asia/Kolkata` as the workspace timezone. INR is stored as integer paise, displays with the `₹` symbol and Indian lakh/crore grouping (for example, `₹1,23,456.78`), and accepts comma-grouped rupee values during CSV import. The currency selector continues to support USD, EUR, GBP, CAD, JPY, KRW, BHD, and KWD.
 
 Existing workspaces are not silently converted from USD or another currency. Change a base currency only before financial activity exists, or add an explicit conversion workflow first. GST, GSTIN/PAN, HSN/SAC, and statutory Indian tax reports are intentionally outside this localization step.
+
+For the disposable `org_demo` showcase workspace only, an explicit reset replaces the stored demo data with the INR seed (including ₹1,25,000.00 and ₹48,000.00 invoices) and rebuilds its normalized records. This is **replacement, not currency conversion**. It is destructive: run it only for demo data you have agreed to discard. Close editing sessions/stop workers and take a database snapshot first. Migration `006` must already be applied; do not edit or rerun applied migrations by hand.
+
+Preview first (read-only; no confirmation required):
+
+```bash
+set -a
+. ./.env.local
+set +a
+npm run db:reset-demo-inr
+```
+
+Then explicitly apply:
+
+```bash
+RESET_DEMO_CONFIRM=RESET_ORG_DEMO npm run db:reset-demo-inr -- --apply
+```
+
+The backup, scoped deletions, rebuild, snapshot replacement, and accounting verification run in **one transaction**. A failure rolls everything back. The reset requires `org_demo` / `entity_demo`, locks the current snapshot, and rejects a version change or mixed-tenant snapshot. It refuses to reset when provider connections, jobs, pending OAuth, or extended accounting records exist, rather than deleting records outside the legacy demo scope. Users, memberships, authentication configuration, other tenants, and relational audit history remain untouched.
+
+On success, the output includes a `backupId`: the old JSON snapshot is retained in the same database's `ledgerflow_state` table under that ID. Do not commit/export that payload. Restoration requires an operator-controlled restore of the snapshot and corresponding relational records together, or restoring the pre-reset database snapshot; do not simply relabel currencies. A second reset is rejected with `demo_already_reset` so new INR work is not erased accidentally.
+
+After deploying the code, reload the browser and confirm **Workspace · INR**, issue a test invoice with paise, import its INR payment, approve it, and inspect Ledger/Reports. Settings locks base currency after invoices, transactions, journal entries or matches exist. Saving unrelated settings still works; a direct forbidden currency change returns HTTP `400`, not a misleading storage `503`. `/api/auth/session` returning `401` while logged out is expected.
 
 ## Checks
 
@@ -56,7 +79,9 @@ npm run db:backfill      # copy the legacy JSON workspace into normalized tables
 npm run vercel:deploy    # deploy a production build after Vercel authentication
 ```
 
-The required checks are intentionally local and do not need provider credentials or a running database.
+The required checks are intentionally local and do not need provider credentials or a running database. Tests and smoke checks use isolated temporary JSON files and never reset `data/ledgerflow.json` or PostgreSQL.
+
+`npm test` also runs the reset SQL against PGlite (PostgreSQL compiled to WASM, pinned as a development-only dependency). These offline tests apply the real migrations and verify rollback, row-level tenant isolation, backups, and preservation of memberships/audit history. No PostgreSQL system installation is needed.
 
 ## Vercel deployment
 
@@ -71,13 +96,13 @@ For CI, provide `VERCEL_TOKEN` through the CI secret store and run `npx vercel -
 
 ## CSV import format
 
-The importer accepts common bank exports with automatic header detection. The minimum required columns are `Date` and either `Amount` or separate `Debit`/`Credit` columns. It also understands `Description`, `Memo`, `Reference`, `Counterparty`, parentheses, `DR`/`CR`, BOMs, and common date formats.
+The importer accepts common bank exports with automatic header detection. The minimum required columns are `Date` and either `Amount` or separate `Debit`/`Credit` columns. It also understands `Description`, `Memo`, `Reference`, `Counterparty`, parentheses, `DR`/`CR`, and BOMs. For INR, slash/dash dates are **day-first** (`20/10/2026`); other currencies retain month-first parsing. ISO `YYYY-MM-DD` is unambiguous for every currency. Quote comma-grouped amounts. Wrong currency symbols, excess decimals, conflicting debit/credit indicators, and mismatched explicit `Currency` columns are rejected per row. An on-screen sample is illustrative only; select a CSV to import actual records.
 
 Example:
 
 ```csv
 Date,Amount,Description,Reference,Counterparty
-2026-10-20,1250.00,Acme payment,INV-1048,Acme Industries
+2026-10-20,"₹1,25,000.00",Acme payment,INV-1048,Acme Industries
 2026-10-21,-42.50,AWS cloud hosting,AWS-OCT,Amazon Web Services
 ```
 

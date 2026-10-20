@@ -2,8 +2,10 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   approveTransaction,
   createCustomer,
+  createInvoice,
   getDashboard,
   getReports,
+  importTransactions,
   saveSettings,
   undoTransaction,
 } from "@/lib/application";
@@ -22,6 +24,8 @@ import { formatMoney, parseAmount } from "@/lib/domain/money";
 import type { Account, BankTransaction, Customer, Invoice } from "@/lib/domain/types";
 import { resetState, getState, updateState } from "@/lib/store";
 import { snapshotFromStored } from "@/lib/store/serialize";
+import { validateStorageState } from "@/lib/store/schema";
+import { createSeedState } from "@/lib/store/seed";
 
 const usd = (minor: bigint) => ({ currency: "USD", minor });
 const accounts: Account[] = [
@@ -69,7 +73,18 @@ describe("money", () => {
     expect(formatMoney(value)).toBe("₹1,23,456.78");
     expect(formatMoney({ currency: "INR", minor: -12345678n })).toBe("-₹1,23,456.78");
     expect(formatMoney({ currency: "INR", minor: 1234567890n })).toBe("₹1,23,45,678.90");
+    expect(parseAmount("-₹1,23,456.78", "INR").minor).toBe(-12345678n);
     expect(() => parseAmount("1.001", "INR")).toThrow("too_many_decimals");
+  });
+
+  it("rejects unsupported currencies in persisted state", () => {
+    const state = createSeedState();
+    expect(() =>
+      validateStorageState({
+        ...state,
+        entity: { ...state.entity, currency: "ZZZ" },
+      }),
+    ).toThrow();
   });
 });
 
@@ -340,6 +355,80 @@ describe("application workflow", () => {
     expect(dashboard.entity.timezone).toBe("Asia/Kolkata");
     expect(dashboard.metrics.outstanding.currency).toBe("INR");
     expect(dashboard.invoices.every((invoice) => invoice.currency === "INR")).toBe(true);
+    expect(dashboard.invoices.find((invoice) => invoice.id === "inv_1042")?.total.minor).toBe(
+      12500000n,
+    );
+    const invoice = await createInvoice({
+      customerId: "cust_acme",
+      description: "INR implementation test",
+      amount: "₹1,25,000.50",
+      dueDate: "2099-01-01",
+    });
+    expect(invoice.currency).toBe("INR");
+    expect(invoice.total.minor).toBe(12500050n);
+    expect(invoice.lines[0]?.unitMinor).toBe(12500050n);
+  });
+
+  it("creates a customer, issues an INR invoice, imports paise and posts a balanced payment", async () => {
+    const customer = await createCustomer({ name: "India Test", email: "inr@example.com" });
+    expect(customer.currency).toBe("INR");
+    const invoice = await createInvoice({
+      customerId: customer.id,
+      description: "Exact INR services",
+      amount: "₹1,25,000.50",
+      dueDate: "2099-01-01",
+    });
+    const date = invoice.issueDate.split("-").reverse().join("/");
+    const csv = `Date,Amount,Description,Reference,Counterparty,Currency\n${date},"₹1,25,000.50",NEFT payment,${invoice.number},India Test,INR`;
+    expect(await importTransactions(csv)).toMatchObject({ imported: 1, errors: [] });
+    expect(await importTransactions(csv)).toMatchObject({ imported: 0, skipped: 1 });
+    const transaction = (await getState()).transactions.find(
+      (item) => item.reference === invoice.number,
+    )!;
+    expect(transaction.date).toBe(invoice.issueDate);
+    expect(transaction.amount).toEqual({ currency: "INR", minor: "12500050" });
+    await approveTransaction(transaction.id, { mode: "suggestion" });
+    const snapshot = snapshotFromStored(await getState());
+    expect(snapshot.invoices.find((item) => item.id === invoice.id)?.status).toBe("paid");
+    for (const entry of snapshot.journalEntries) {
+      expect(() => validateJournalEntry(entry, snapshot.accounts)).not.toThrow();
+      expect(entry.lines.every((line) => line.amount.currency === "INR")).toBe(true);
+    }
+    const reports = await getReports(invoice.issueDate);
+    expect(reports.balanceSheet.difference.minor).toBe(0n);
+    expect(reports.pnl.net.currency).toBe("INR");
+  });
+
+  it("keeps currency locked after any activity and leaves all records unchanged on rejection", async () => {
+    const before = structuredClone(await getState());
+    expect((await getDashboard()).currencyChangeAllowed).toBe(false);
+    await expect(saveSettings({ currency: "USD" })).rejects.toMatchObject({
+      code: "currency_change_forbidden",
+    });
+    expect(await getState()).toEqual(before);
+    await saveSettings({ currency: "INR", timezone: "Asia/Kolkata", feeToleranceMinor: "2500" });
+    expect((await getState()).entity.settings.feeToleranceMinor).toBe("2500");
+  });
+
+  it("can change an unused currency and still post the first invoice", async () => {
+    await updateState((state) => {
+      state.invoices = [];
+      state.transactions = [];
+      state.journalEntries = [];
+      state.matches = [];
+    });
+    expect((await getDashboard()).currencyChangeAllowed).toBe(true);
+    await saveSettings({ currency: "USD" });
+    expect((await getState()).accounts.every((account) => account.currency === "USD")).toBe(true);
+    await saveSettings({ currency: "INR" });
+    const invoice = await createInvoice({
+      customerId: "cust_acme",
+      description: "First invoice",
+      amount: "₹100.25",
+      dueDate: "2099-01-01",
+    });
+    expect(invoice.total).toEqual({ currency: "INR", minor: 10025n });
+    expect((await getDashboard()).currencyChangeAllowed).toBe(false);
   });
 
   it("posts an outgoing category with a balanced journal", async () => {

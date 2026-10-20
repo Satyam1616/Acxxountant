@@ -41,6 +41,7 @@ export function parseBankCsv(csv: string, currency: CurrencyCode, source = "csv"
   const amountIndex = index(["amount", "transaction amount", "value"]);
   const debitIndex = index(["debit", "withdrawal", "money out"]);
   const creditIndex = index(["credit", "deposit", "money in"]);
+  const currencyIndex = index(["currency"]);
   const descriptionIndex = index(["description", "memo", "narrative", "details"]);
   const referenceIndex = index(["reference", "ref", "check number", "transaction id"]);
   const counterpartyIndex = index(["counterparty", "payer", "payee", "name"]);
@@ -56,31 +57,34 @@ export function parseBankCsv(csv: string, currency: CurrencyCode, source = "csv"
     const rowNumber = offset + 2;
     if (row.every((cell) => !cell.trim())) return;
     try {
-      const date = normalizeDate(row[dateIndex] ?? "");
-      let rawAmount = amountIndex >= 0 ? row[amountIndex] : "";
-      let flow: BankFlow = "inflow";
-      if (amountIndex < 0) {
-        const debit = row[debitIndex] ?? "";
-        const credit = row[creditIndex] ?? "";
-        if (credit.trim()) {
-          rawAmount = credit;
-          flow = "inflow";
-        } else {
-          rawAmount = debit;
-          flow = "outflow";
+      if (currencyIndex >= 0) {
+        const declaredCurrency = (row[currencyIndex] ?? "").trim().toUpperCase();
+        if (declaredCurrency !== currency.toUpperCase()) {
+          throw new DomainError(
+            "currency_mismatch",
+            `Expected ${currency}, received ${declaredCurrency || "blank currency"}`,
+          );
         }
-      } else if (/^\s*[-(]/.test(rawAmount) || /DR\s*$/i.test(rawAmount)) {
-        flow = "outflow";
       }
-      const hasCreditMarker = /CR\s*$/i.test(rawAmount);
-      const cleaned = rawAmount
-        .replace(/[,$\s]/g, "")
-        .replace(/^\((.*)\)$/, "-$1")
-        .replace(/(?:CR|DR)$/i, "")
-        .replace(/^-/, "");
-      if (hasCreditMarker) flow = "inflow";
-      const amount = parseAmount(cleaned, currency);
-      const absolute = { ...amount, minor: amount.minor < 0n ? -amount.minor : amount.minor };
+      const date = normalizeDate(row[dateIndex] ?? "", currency);
+      let parsedAmount =
+        amountIndex >= 0 ? parseCsvAmount(row[amountIndex] ?? "", currency) : undefined;
+      if (amountIndex < 0) {
+        const rawDebit = (row[debitIndex] ?? "").trim();
+        const rawCredit = (row[creditIndex] ?? "").trim();
+        const debit = rawDebit ? parseCsvAmount(rawDebit, currency, "outflow") : undefined;
+        const credit = rawCredit ? parseCsvAmount(rawCredit, currency, "inflow") : undefined;
+        if (debit && credit && debit.amount.minor !== 0n && credit.amount.minor !== 0n) {
+          throw new DomainError(
+            "ambiguous_amount",
+            "Both debit and credit contain nonzero amounts",
+          );
+        }
+        parsedAmount = debit && debit.amount.minor !== 0n ? debit : (credit ?? debit);
+      }
+      if (!parsedAmount)
+        throw new DomainError("invalid_amount", "A debit or credit amount is required");
+      const { amount: absolute, flow } = parsedAmount;
       const reference = row[referenceIndex] ?? "";
       const description = (row[descriptionIndex] ?? reference) || "Imported transaction";
       const canonical = `${source}|${date}|${absolute.minor}|${flow}|${normalizeIdentity(description)}|${normalizeIdentity(reference)}|${normalizeIdentity(row[counterpartyIndex] ?? "")}`;
@@ -112,7 +116,44 @@ function normalizeHeader(value: string): string {
     .trim();
 }
 
-function normalizeDate(value: string): string {
+function parseCsvAmount(
+  value: string,
+  currency: CurrencyCode,
+  columnFlow?: BankFlow,
+): Pick<ImportedTransaction, "amount" | "flow"> {
+  let raw = value.trim();
+  let marker = /(CR|DR)$/i.exec(raw);
+  if (marker) raw = raw.slice(0, marker.index).trim();
+  const parenthesized = raw.startsWith("(") && raw.endsWith(")");
+  if (parenthesized) {
+    raw = raw.slice(1, -1).trim();
+    // Banks put the direction suffix either inside or outside the parentheses.
+    if (!marker) {
+      marker = /(CR|DR)$/i.exec(raw);
+      if (marker) raw = raw.slice(0, marker.index).trim();
+    }
+  }
+  // Validate symbols, grouping, and signs before taking an absolute magnitude.
+  const amount = parseAmount(raw, currency);
+  const sign = /[+-]/.exec(raw)?.[0];
+  if (parenthesized && sign) {
+    throw new DomainError("invalid_amount", "Use parentheses or a sign, not both");
+  }
+  // In a debit/credit column, a positive value is a magnitude in that column's direction.
+  const signFlow =
+    parenthesized || sign === "-" ? "outflow" : sign === "+" ? (columnFlow ?? "inflow") : undefined;
+  const markerFlow = marker ? (marker[1].toUpperCase() === "DR" ? "outflow" : "inflow") : undefined;
+  const flow = markerFlow ?? signFlow ?? columnFlow ?? "inflow";
+  if ((signFlow && signFlow !== flow) || (columnFlow && columnFlow !== flow)) {
+    throw new DomainError("conflicting_flow", "Amount sign, DR/CR marker, and column must agree");
+  }
+  return {
+    amount: { ...amount, minor: amount.minor < 0n ? -amount.minor : amount.minor },
+    flow,
+  };
+}
+
+function normalizeDate(value: string, currency: CurrencyCode): string {
   const trimmed = value.trim();
   const iso = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(trimmed);
   if (iso) {
@@ -120,9 +161,10 @@ function normalizeDate(value: string): string {
     if (!isValidBusinessDate(date)) throw new DomainError("invalid_date", `Invalid date: ${value}`);
     return date;
   }
-  const monthFirst = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
-  if (monthFirst) {
-    const date = `${monthFirst[3]}-${monthFirst[1].padStart(2, "0")}-${monthFirst[2].padStart(2, "0")}`;
+  const local = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
+  if (local) {
+    const [month, day] = currency === "INR" ? [local[2], local[1]] : [local[1], local[2]];
+    const date = `${local[3]}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
     if (!isValidBusinessDate(date)) throw new DomainError("invalid_date", `Invalid date: ${value}`);
     return date;
   }
